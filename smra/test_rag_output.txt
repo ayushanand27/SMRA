@@ -1,0 +1,27 @@
+C:\Users\ayush\AppData\Roaming\Python\Python313\site-packages\pydantic\_internal\_generate_schema.py:2274: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+C:\Users\ayush\AppData\Roaming\Python\Python313\site-packages\pydantic\_internal\_generate_schema.py:2274: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+Namespaces in index: {'': {'vector_count': 158}}
+Searching in namespace: ''
+
+Found 3 results
+
+--- Result 1 ---
+Source: C:\Users\ayush\Xplorex_demo\gen ai internship\llm_outputs\bda\stock_market\smra\pdfs\e0efa2e8-931f-4852-8682-25795da9f3c4.pdf
+Content: quarters, months and periods of those fiscal years.
+Note 2 – Revenue
+The following table shows disaggregated net sales, as well as the portion of total net sales that was previously deferred, for the 
+
+--- Result 2 ---
+Source: C:\Users\ayush\Xplorex_demo\gen ai internship\llm_outputs\bda\stock_market\smra\pdfs\e0efa2e8-931f-4852-8682-25795da9f3c4.pdf
+Content: Total net sales $ 111,184 $ 95,359 $ 254,940 $ 219,659 
+Portion of total net sales that was included in deferred revenue as of thebeginning of the period $ 3,987 $ 3,672 $ 5,834 $ 5,440 
+The Company’s
+
+--- Result 3 ---
+Source: C:\Users\ayush\Xplorex_demo\gen ai internship\llm_outputs\bda\stock_market\smra\pdfs\e0efa2e8-931f-4852-8682-25795da9f3c4.pdf
+Content: Operating Expenses
+Operating expenses for the three- and six-month periods ended March 28, 2026 and March 29, 2025, were as follows (dollars in millions):
+Three Months Ended Six Months Ended
+March 28,
