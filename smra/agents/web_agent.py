@@ -20,7 +20,10 @@ def _is_cached(key: str) -> bool:
     return datetime.now() - _cache[key]["time"] < timedelta(minutes=CACHE_TTL_MINUTES)
 
 def run_web_agent(user_question: str) -> dict:
-    from utils.llm import call_llm
+    try:
+        from smra.utils.llm import call_llm
+    except (ModuleNotFoundError, ImportError):
+        from utils.llm import call_llm
 
     key = _cache_key(user_question)
     if _is_cached(key):
