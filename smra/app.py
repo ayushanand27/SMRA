@@ -19,9 +19,8 @@ try:
     from smra.agents.sql_agent import run_sql_agent
     from smra.agents.rag_agent import run_rag_agent
     from smra.agents.web_agent import run_web_agent
-except Exception:
+except (ModuleNotFoundError, ImportError):
     # Fallback to local imports when running directly from the smra/ directory
-    logger.exception("Package imports failed; falling back to local imports")
     from router import classify_intent
     from agents.sql_agent import run_sql_agent
     from agents.rag_agent import run_rag_agent

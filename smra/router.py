@@ -1,7 +1,10 @@
 import json
 import re
 import logging
-from utils.llm import call_llm
+try:
+    from smra.utils.llm import call_llm
+except (ModuleNotFoundError, ImportError):
+    from utils.llm import call_llm
 
 logger = logging.getLogger("smra.router")
 
