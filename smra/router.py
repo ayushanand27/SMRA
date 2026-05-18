@@ -1,112 +1,50 @@
-import os
 import json
+import re
+import logging
 from utils.llm import call_llm
 
+logger = logging.getLogger("smra.router")
+
 ROUTING_SYSTEM = """You are a query router for a stock market research assistant.
-Classify the user query into one or more categories:
-- SQL: historical prices, moving averages, sector performance, volume, returns, rankings
-- RAG: annual reports, 10-K filings, revenue, earnings, guidance, risk factors, fundamentals
-- WEB: recent news, latest, today, analyst ratings, earnings announcements, why did X move
 
-Reply with ONLY valid JSON. Example: {"route": ["SQL"]} or {"route": ["WEB", "SQL"]}
-No explanation, no markdown, just the JSON object."""
+Classify the query into ONE OR MORE categories. Return ONLY a JSON object.
 
+Rules:
+- SQL: stock price, closing price, opening price, volume, market cap, 
+       moving average, highest, lowest, best performing, worst performing,
+       sector performance, price history, OHLC data
+- RAG: revenue, net sales, earnings, profit, income, gross margin,
+       annual report, 10-K, filing, financial statement, balance sheet,
+       cash flow, guidance, R&D expenses  
+- WEB: news, latest, today, recent, analyst rating, price target,
+       why did, what happened, current events, forecast
+
+Return format (JSON only, no markdown):
+{"route": ["SQL"]}
+or {"route": ["RAG"]}
+or {"route": ["WEB"]}
+or {"route": ["SQL", "RAG"]} for hybrid"""
 
 def classify_intent(query: str) -> list[str]:
-    q = (query or "").strip().lower()
-    valid = {"SQL", "RAG", "WEB"}
-
-    def env_bool(name: str, default: bool = False) -> bool:
-        v = os.getenv(name)
-        if v is None:
-            return default
-        return v.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-    # --- Fast heuristic router (prevents blocking on LLM calls) ---
-    sql_hints = [
-        "price",
-        "close",
-        "open",
-        "high",
-        "low",
-        "volume",
-        "moving average",
-        "ma ",
-        "sma",
-        "ema",
-        "return",
-        "returns",
-        "volatility",
-        "rsi",
-        "macd",
-    ]
-    rag_hints = [
-        "10-k",
-        "10k",
-        "annual report",
-        "form 10",
-        "filing",
-        "net sales",
-        "revenue",
-        "gross margin",
-        "operating income",
-        "guidance",
-        "eps",
-        "cash flow",
-        "balance sheet",
-        "segment",
-        "risk factor",
-        "risk factors",
-    ]
-    web_hints = [
-        "news",
-        "latest",
-        "today",
-        "recent",
-        "headline",
-        "why did",
-        "why is",
-        "what happened",
-        "rumor",
-        "rating",
-        "downgrade",
-        "upgrade",
-        "earnings call",
-    ]
-
-    routes = []
-    if any(h in q for h in web_hints):
-        routes.append("WEB")
-    if any(h in q for h in rag_hints):
-        routes.append("RAG")
-    if any(h in q for h in sql_hints):
-        routes.append("SQL")
-
-    # Default router mode:
-    # - heuristic: never call LLM
-    # - hybrid: use heuristics, else LLM
-    # - llm: always call LLM
-    mode = os.getenv("ROUTER_MODE", "hybrid").strip().lower()
-
-    if mode in {"heuristic", "fast"}:
-        return routes or ["SQL"]
-
-    if mode in {"hybrid", "auto"} and routes:
-        # Heuristics already decided.
-        return [r for r in routes if r in valid] or ["SQL"]
-
-    # Allow disabling LLM routing entirely even in hybrid mode.
-    if env_bool("ROUTER_DISABLE_LLM", False):
-        return routes or ["SQL"]
-
-    # --- LLM router fallback ---
     try:
-        result = call_llm(ROUTING_SYSTEM, query)
-        # Clean markdown if model adds it
-        result = result.strip().replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(result)
-        llm_routes = parsed.get("route", ["SQL"])
-        llm_routes = [r for r in llm_routes if r in valid]
-        return llm_routes or routes or ["SQL"]
+        raw = call_llm(ROUTING_SYSTEM, f"Query: {query}")
+        raw = raw.strip().replace("```json", "").replace("```", "").strip()
+        
+        # Extract JSON object
+        match = re.search(r'\{.*?\}', raw, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group())
+            routes = parsed.get("route", ["SQL"])
+            valid = {"SQL", "RAG", "WEB"}
+            result = [r for r in routes if r in valid]
+            return result if result else ["SQL"]
     except Exception:
-        return routes or ["SQL"]  # safe fallback
+        logger.exception("Router failed")
+    
+    # Keyword fallback — never returns empty
+    q = query.lower()
+    if any(w in q for w in ["news", "latest", "today", "why", "recent", "analyst"]):
+        return ["WEB"]
+    if any(w in q for w in ["revenue", "sales", "earnings", "profit", "filing", "annual"]):
+        return ["RAG"]
+    return ["SQL"]

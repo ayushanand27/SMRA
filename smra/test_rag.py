@@ -12,12 +12,12 @@ embeddings = HuggingFaceEmbeddings(
 
 index_name = os.getenv("PINECONE_INDEX", "smra-index")
 
-# Check what namespace your vectors are actually in
+# Check what namespace your vectors are actually in (Pinecone SDK v3.x)
 from pinecone import Pinecone
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 idx = pc.Index(index_name)
 stats = idx.describe_index_stats()
-print("Namespaces in index:", stats.namespaces)
+print("Namespaces in index:", getattr(stats, "namespaces", stats.get("namespaces") if isinstance(stats, dict) else {}))
 
 # Try searching with explicit namespace
 namespace = list(stats.namespaces.keys())[0] if stats.namespaces else ""
