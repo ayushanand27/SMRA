@@ -304,14 +304,6 @@ Unstructured (RAG): example Apple 10-K and NVIDIA Annual Report OCR texts chunke
 - FinGPT — https://github.com/AI4Finance-Foundation/FinGPT
 - FinStat2SQL (research)
 
-## Notes about READMEs
-
-We keep the detailed usage and developer notes in `smra/README.md` for module-level documentation and quick local edits. This root `README.md` is now the canonical, end-to-end guide for the repository and includes everything from the `smra/README.md` (duplicates removed).
-
-If you prefer, we can:
-- remove `smra/README.md` and keep only this root README, or
-- keep both and add a short pointer at the top of `smra/README.md` to avoid drift (recommended).
-
 ## License
 
 MIT
