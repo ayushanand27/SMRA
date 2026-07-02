@@ -4,8 +4,9 @@ try:
     from smra.utils.llm import call_llm
     from smra.utils.schemas import keyword_route_fallback, validate_router_output
 except (ModuleNotFoundError, ImportError):
-    from utils.llm import call_llm
     from utils.schemas import keyword_route_fallback, validate_router_output
+
+    from utils.llm import call_llm
 
 logger = logging.getLogger("smra.router")
 

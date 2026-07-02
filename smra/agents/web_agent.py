@@ -26,8 +26,9 @@ def run_web_agent(user_question: str) -> dict:
         from smra.utils.llm import call_llm
         from smra.utils.schemas import error_response, success_response
     except (ModuleNotFoundError, ImportError):
-        from utils.llm import call_llm
         from utils.schemas import error_response, success_response
+
+        from utils.llm import call_llm
 
     key = _cache_key(user_question)
     if _is_cached(key):

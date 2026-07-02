@@ -12,9 +12,10 @@ try:
 except (ModuleNotFoundError, ImportError):
     from utils.config import get_settings
     from utils.faithfulness import check_numeric_grounding
-    from utils.llm import call_llm
     from utils.retrieval import hybrid_retrieve
     from utils.schemas import error_response, success_response
+
+    from utils.llm import call_llm
 
 
 def _apply_faithfulness(answer: str, context: str) -> tuple[str, dict]:

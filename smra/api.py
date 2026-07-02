@@ -39,12 +39,12 @@ except (ModuleNotFoundError, ImportError):
     from agents.web_agent import run_web_agent
     from orchestrator import synthesize_hybrid_answer
     from router import classify_intent
-
-    from utils import audit
     from utils.config import get_settings
     from utils.guardrails import check_input, sanitize_output
     from utils.observability import configure_logging, get_query_id, new_query_id
     from utils.schemas import expand_routes
+
+    from utils import audit
 
 logger = logging.getLogger("smra.api")
 

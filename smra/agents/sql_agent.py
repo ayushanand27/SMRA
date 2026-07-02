@@ -10,8 +10,9 @@ try:
     from smra.utils.llm import call_llm
     from smra.utils.schemas import error_response, success_response
 except (ModuleNotFoundError, ImportError):
-    from utils.llm import call_llm
     from utils.schemas import error_response, success_response
+
+    from utils.llm import call_llm
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "smra.db"))
 
