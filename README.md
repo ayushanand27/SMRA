@@ -27,7 +27,10 @@ faithfulness/citation grounding):
 | Multi-provider LLM | Groq / Ollama / Gemini via `LLM_PROVIDER` (`utils/llm.py`) |
 | Config | Centralized env-driven settings (`utils/config.py`) |
 | HTTP API | FastAPI service: `/query`, `/health`, `/audit` (`api.py`) |
-| Testing & CI | 36 unit tests + offline eval suite + ruff, gated in GitHub Actions |
+| API auth & rate limiting | Optional `X-API-Key` auth + sliding-window rate limit (`utils/security.py`) |
+| Langfuse tracing | Optional managed LLM traces when `LANGFUSE_ENABLED=1` (`utils/langfuse_client.py`) |
+| LLM-judge evals | Answer-quality scoring via `--judge` (`eval/judge.py`, `eval/run_eval.py`) |
+| Testing & CI | 50+ unit tests + offline eval suite + ruff, gated in GitHub Actions |
 | Containerization | `Dockerfile` (Tesseract + Poppler), `.streamlit/config.toml` |
 
 ### Run the API
@@ -35,7 +38,29 @@ faithfulness/citation grounding):
 ```bash
 uvicorn smra.api:app --reload --port 8000
 # POST /query {"query": "Apple total net sales"} ; GET /health ; GET /audit
+# Optional: AUTH_ENABLED=1 SMRA_API_KEYS=mykey curl -H "X-API-Key: mykey" ...
 ```
+
+### Auth, rate limiting & UI gate
+
+Off by default for local dev. Enable via `smra/.env`:
+
+```bash
+AUTH_ENABLED=1
+SMRA_API_KEYS=dev-key-1,dev-key-2   # comma-separated allow-list
+RATE_LIMIT_PER_MIN=30               # per API key or client IP
+UI_PASSWORD=your-shared-password    # optional Streamlit gate
+```
+
+### Langfuse observability
+
+```bash
+LANGFUSE_ENABLED=1
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+Every `call_llm` invocation is traced when enabled; degrades to a no-op otherwise.
 
 ### Quality gate (run before every PR)
 
@@ -43,6 +68,8 @@ uvicorn smra.api:app --reload --port 8000
 ruff check smra tests
 pytest
 python -m smra.eval.run_eval
+# Optional (needs LLM keys): full pipeline + LLM-judge scoring
+python -m smra.eval.run_eval --judge --judge-threshold 0.6
 ```
 
 Quick start

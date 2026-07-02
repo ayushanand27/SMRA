@@ -5,9 +5,11 @@ import time
 
 try:
     from smra.utils.config import get_settings
+    from smra.utils.langfuse_client import observe_generation
     from smra.utils.observability import track_llm_call
 except (ModuleNotFoundError, ImportError):
     from utils.config import get_settings
+    from utils.langfuse_client import observe_generation
     from utils.observability import track_llm_call
 
 logger = logging.getLogger("smra.llm")
@@ -109,10 +111,18 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int | None = None
     temperature = settings.llm_temperature if temperature is None else temperature
 
     if provider == "groq":
-        return _call_groq(system_prompt, user_prompt, settings.groq_model, max_tokens, temperature)
-    if provider == "ollama":
-        return _call_ollama(system_prompt, user_prompt, settings.ollama_model, max_tokens, temperature)
-    if provider == "gemini":
-        return _call_gemini(system_prompt, user_prompt, settings.gemini_model, max_tokens, temperature)
+        model = settings.groq_model
+        fn = _call_groq
+    elif provider == "ollama":
+        model = settings.ollama_model
+        fn = _call_ollama
+    elif provider == "gemini":
+        model = settings.gemini_model
+        fn = _call_gemini
+    else:
+        raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'. Use groq, ollama, or gemini.")
 
-    raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'. Use groq, ollama, or gemini.")
+    with observe_generation(name="call_llm", model=model, provider=provider, prompt=user_prompt) as gen:
+        output = fn(system_prompt, user_prompt, model, max_tokens, temperature)
+        gen["output"] = output
+        return output

@@ -65,6 +65,23 @@ class Settings:
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     json_logs: bool = field(default_factory=lambda: _env_bool("JSON_LOGS", False))
 
+    # Langfuse (managed tracing)
+    langfuse_enabled: bool = field(default_factory=lambda: _env_bool("LANGFUSE_ENABLED", False))
+    langfuse_host: str = field(default_factory=lambda: os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"))
+    langfuse_public_key: str = field(default_factory=lambda: os.getenv("LANGFUSE_PUBLIC_KEY", ""))
+    langfuse_secret_key: str = field(default_factory=lambda: os.getenv("LANGFUSE_SECRET_KEY", ""))
+
+    # API auth & rate limiting
+    api_keys: List[str] = field(
+        default_factory=lambda: [k.strip() for k in os.getenv("SMRA_API_KEYS", "").split(",") if k.strip()]
+    )
+    auth_enabled: bool = field(default_factory=lambda: _env_bool("AUTH_ENABLED", False))
+    rate_limit_per_min: int = field(default_factory=lambda: _env_int("RATE_LIMIT_PER_MIN", 30))
+    rate_limit_enabled: bool = field(default_factory=lambda: _env_bool("RATE_LIMIT_ENABLED", True))
+
+    # Streamlit UI gate (optional shared password)
+    ui_password: str = field(default_factory=lambda: os.getenv("UI_PASSWORD", ""))
+
     # Paths
     db_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", str(SMRA_ROOT / "data" / "smra.db")))
 

@@ -163,6 +163,9 @@ def main():
     provider = os.getenv("LLM_PROVIDER", "groq")
     ui.render_hero(provider)
 
+    if not ui.require_password(settings.ui_password):
+        st.stop()
+
     with st.sidebar:
         st.markdown('<div class="smra-side-title">Workspace</div>', unsafe_allow_html=True)
         ui.render_metric("Market rows", f"{_db_row_count():,}")

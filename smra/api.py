@@ -19,7 +19,7 @@ if _env_path.exists():
 else:
     load_dotenv(override=True)
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 try:
@@ -33,6 +33,7 @@ try:
     from smra.utils.guardrails import check_input, sanitize_output
     from smra.utils.observability import configure_logging, get_query_id, new_query_id
     from smra.utils.schemas import expand_routes
+    from smra.utils.security import check_rate_limit, verify_api_key
 except (ModuleNotFoundError, ImportError):
     from agents.rag_agent import run_rag_agent
     from agents.sql_agent import run_sql_agent
@@ -43,6 +44,7 @@ except (ModuleNotFoundError, ImportError):
     from utils.guardrails import check_input, sanitize_output
     from utils.observability import configure_logging, get_query_id, new_query_id
     from utils.schemas import expand_routes
+    from utils.security import check_rate_limit, verify_api_key
 
     from utils import audit
 
@@ -54,8 +56,24 @@ configure_logging(level=settings.log_level, json_logs=settings.json_logs)
 app = FastAPI(
     title="SMRA API",
     description="Stock Market Research Assistant — RAG + Text-to-SQL + Web search",
-    version="0.3.0",
+    version="0.4.0",
 )
+
+
+def auth_and_limit(request: Request, x_api_key: Optional[str] = Header(default=None)) -> str:
+    """FastAPI dependency: enforce API-key auth and per-identity rate limiting."""
+    if not verify_api_key(x_api_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key (X-API-Key).")
+
+    identity = x_api_key or (request.client.host if request.client else "anonymous")
+    allowed, retry_after = check_rate_limit(identity)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return identity
 
 
 class QueryRequest(BaseModel):
@@ -83,7 +101,7 @@ def health() -> dict:
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(req: QueryRequest) -> QueryResponse:
+def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryResponse:
     qid = new_query_id()
     start = time.perf_counter()
 
@@ -156,5 +174,5 @@ def query(req: QueryRequest) -> QueryResponse:
 
 
 @app.get("/audit")
-def audit_recent(limit: int = 20) -> dict:
+def audit_recent(limit: int = 20, _identity: str = Depends(auth_and_limit)) -> dict:
     return {"records": audit.recent(limit=limit)}

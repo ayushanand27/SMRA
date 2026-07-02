@@ -198,6 +198,31 @@ def inject_theme() -> None:
     st.markdown(PREMIUM_CSS, unsafe_allow_html=True)
 
 
+def require_password(expected: str) -> bool:
+    """Optional shared-password gate for the Streamlit UI.
+
+    Returns True when access is granted (or no password configured).
+    """
+    if not expected:
+        return True
+    if st.session_state.get("_smra_authed"):
+        return True
+
+    st.markdown('<div class="smra-side-title">Restricted</div>', unsafe_allow_html=True)
+    with st.form("smra_login", clear_on_submit=False):
+        pwd = st.text_input("Access password", type="password")
+        submitted = st.form_submit_button("Unlock", use_container_width=True)
+    if submitted:
+        import hmac
+
+        if hmac.compare_digest(pwd or "", expected):
+            st.session_state["_smra_authed"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
 def render_hero(provider: str) -> None:
     st.markdown(
         f"""
