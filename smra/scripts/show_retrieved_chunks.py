@@ -1,6 +1,7 @@
-from pathlib import Path
 import os
 import sys
+from pathlib import Path
+
 from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore

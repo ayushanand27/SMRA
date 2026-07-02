@@ -1,19 +1,12 @@
-import os
-import sys
-import pickle
-from pathlib import Path
-from dotenv import load_dotenv
-
-# Prepare environment and imports so this can be run from the repo root or from smra/
-script_dir = Path(__file__).resolve().parent
-import os
-import sys
-import pickle
 import logging
+import os
+import pickle
+import re
+import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
-# Load env from smra/.env so the script can be run from repo root
 script_dir = Path(__file__).resolve().parent
 smra_root = script_dir.parent
 env_path = smra_root / ".env"
@@ -96,6 +89,55 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
     return chunks
 
 
+# Map common issuer names/tickers seen in filenames to a canonical ticker.
+_TICKER_HINTS = {
+    "apple": "AAPL",
+    "aapl": "AAPL",
+    "nvidia": "NVDA",
+    "nvda": "NVDA",
+    "tesla": "TSLA",
+    "tsla": "TSLA",
+    "microsoft": "MSFT",
+    "msft": "MSFT",
+    "google": "GOOGL",
+    "alphabet": "GOOGL",
+    "amazon": "AMZN",
+    "amzn": "AMZN",
+    "meta": "META",
+}
+
+
+def extract_doc_metadata(filename: str, text: str) -> dict:
+    """Infer ticker, fiscal year, and document type for richer, filterable retrieval.
+
+    Financial RAG needs metadata (entity, period, doc type) so retrieval can
+    distinguish e.g. Apple Inc. (AAPL) from lookalikes and stale vs current filings.
+    """
+    name_l = filename.lower()
+    sample = (text or "")[:2000].lower()
+
+    ticker = ""
+    for hint, sym in _TICKER_HINTS.items():
+        if hint in name_l or hint in sample:
+            ticker = sym
+            break
+
+    doc_type = "unknown"
+    if "10-k" in name_l or "10k" in name_l or "10-k" in sample or "annual report" in sample:
+        doc_type = "10-K"
+    elif "10-q" in name_l or "10q" in name_l or "10-q" in sample:
+        doc_type = "10-Q"
+    elif "8-k" in name_l or "8k" in name_l:
+        doc_type = "8-K"
+
+    fiscal_year = ""
+    year_match = re.search(r"(20\d{2})", name_l) or re.search(r"fiscal\s+(?:year\s+)?(20\d{2})", sample)
+    if year_match:
+        fiscal_year = year_match.group(1)
+
+    return {"ticker": ticker, "doc_type": doc_type, "fiscal_year": fiscal_year}
+
+
 def ingest_pdfs(pdf_folder: str):
     """Extract PDFs, produce embeddings, save a local rag store, and optionally upload to Pinecone."""
     try:
@@ -127,10 +169,18 @@ def ingest_pdfs(pdf_folder: str):
     for pdf_path in pdf_files:
         pages = extract_text_from_pdf(str(pdf_path))
         for page_data in pages:
+            doc_meta = extract_doc_metadata(page_data["source"], page_data["text"])
             text_chunks = chunk_text(page_data["text"])
             for chunk in text_chunks:
                 if len(chunk.strip()) > 30:
-                    all_docs.append(Document(page_content=chunk, metadata={"source": page_data["source"], "page": page_data["page"]}))
+                    metadata = {
+                        "source": page_data["source"],
+                        "page": page_data["page"],
+                        "ticker": doc_meta["ticker"],
+                        "doc_type": doc_meta["doc_type"],
+                        "fiscal_year": doc_meta["fiscal_year"],
+                    }
+                    all_docs.append(Document(page_content=chunk, metadata=metadata))
 
     if not all_docs:
         logger.error("No text extracted from any PDF!")
@@ -206,4 +256,4 @@ if __name__ == "__main__":
     pdf_dir = smra_root / "pdfs"
     logger.info(f"Starting ingestion from: {pdf_dir}")
     ingest_pdfs(str(pdf_dir))
-    
+

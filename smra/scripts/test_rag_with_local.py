@@ -5,6 +5,7 @@ This demonstrates the project works even if Pinecone is unreachable or embedding
 import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 script_dir = Path(__file__).resolve().parent
@@ -43,7 +44,7 @@ for q in test_queries:
         r = run_rag_agent(q)
         answer = r.get("answer", "ERROR: No answer")
         sources = r.get("sources", [])
-        
+
         # Truncate long answers for readability
         display_answer = (answer[:300] + "...") if len(answer) > 300 else answer
         print(f"✅ Answer:\n{display_answer}")

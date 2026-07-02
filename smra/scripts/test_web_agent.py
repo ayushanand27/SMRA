@@ -1,6 +1,6 @@
-import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 script_dir = Path(__file__).resolve().parent
@@ -24,7 +24,7 @@ print(f"Running web agent query: {q}\n")
 
 try:
     r = run_web_agent(q)
-except Exception as e:
+except Exception:
     print("ERROR while running run_web_agent:")
     raise
 

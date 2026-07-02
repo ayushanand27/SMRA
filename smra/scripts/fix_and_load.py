@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Backup/remove placeholder DB, run loader, and verify tables."""
-import shutil
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
-import sqlite3
 import traceback
 
 base_db = os.path.join('smra', 'data', 'smra.db')

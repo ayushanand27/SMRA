@@ -1,5 +1,7 @@
 import os
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -14,6 +16,7 @@ index_name = os.getenv("PINECONE_INDEX", "smra-index")
 
 # Check what namespace your vectors are actually in (Pinecone SDK v3.x)
 from pinecone import Pinecone
+
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 idx = pc.Index(index_name)
 stats = idx.describe_index_stats()

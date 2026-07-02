@@ -1,0 +1,20 @@
+[project]
+name = "smra"
+version = "0.2.0"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# app.py loads .env before importing modules that read env at import time.
+"smra/app.py" = ["E402"]
+# Legacy one-off dev/debug helpers kept for reference; not part of the app runtime.
+"smra/scripts/*" = ["E402", "E401", "E741", "F401", "F841", "I001", "E722", "W605"]
+"smra/test_rag.py" = ["E402", "I001", "F401"]
+"smra/agents/rag_agent.py" = ["E402"]

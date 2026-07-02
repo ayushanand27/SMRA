@@ -1,6 +1,6 @@
-import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Ensure we can import the project modules
@@ -27,7 +27,7 @@ print(f"Running SQL agent query: {q}\n")
 
 try:
     r = run_sql_agent(q)
-except Exception as e:
+except Exception:
     print("ERROR while running run_sql_agent:")
     raise
 
@@ -40,7 +40,6 @@ data = r.get('data')
 rows_count = 0
 try:
     # If it's a pandas DataFrame
-    import pandas as _pd
     if data is None:
         rows_count = 0
     elif hasattr(data, 'empty'):
@@ -57,7 +56,6 @@ print('ROWS:', rows_count)
 
 if data is not None:
     try:
-        import pandas as _pd
         if hasattr(data, 'empty'):
             if not data.empty:
                 print('SAMPLE ROW 0:', data.iloc[0].to_dict())

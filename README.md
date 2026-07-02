@@ -2,10 +2,48 @@
 
 AI-powered investment research assistant using RAG + Text-to-SQL + Live Web Search.
 
-This repository contains a small demo app (Streamlit) that demonstrates:
+This repository contains a demo app (Streamlit + FastAPI) that demonstrates:
 - Natural language → SQL queries against a local SQLite stock prices DB
 - RAG over uploaded financial PDFs (Pinecone + local HuggingFace embeddings)
 - Live web search via Tavily
+
+## Production-grade features
+
+SMRA is engineered against current LLM/financial-AI standards
+([OWASP LLM Top 10](https://genai.owasp.org/llm-top-10/), OTel GenAI observability,
+faithfulness/citation grounding):
+
+| Area | Implementation |
+|------|----------------|
+| Multi-agent routing | LLM router + deterministic keyword fallback (`router.py`, `utils/schemas.py`) |
+| HYBRID orchestration | Runs SQL + RAG and synthesizes one answer (`orchestrator.py`) |
+| Hybrid retrieval | Dense vectors + BM25 fusion + cross-encoder rerank (`utils/retrieval.py`) |
+| Faithfulness | Numeric grounding check; flags unverifiable figures (`utils/faithfulness.py`) |
+| Rich metadata | Chunks tagged with ticker / doc_type / fiscal_year (`scripts/ingest_pdfs.py`) |
+| Security guardrails | Prompt-injection + SQL-abuse filters, input limits, output sanitization (`utils/guardrails.py`) |
+| SQL safety | `SELECT`-only validation + parameterized queries (`agents/sql_agent.py`) |
+| Observability | Structured logs, latency, token & cost per call, `query_id` (`utils/observability.py`) |
+| Audit / replay | Every request persisted for reproducibility (`utils/audit.py`) |
+| Multi-provider LLM | Groq / Ollama / Gemini via `LLM_PROVIDER` (`utils/llm.py`) |
+| Config | Centralized env-driven settings (`utils/config.py`) |
+| HTTP API | FastAPI service: `/query`, `/health`, `/audit` (`api.py`) |
+| Testing & CI | 36 unit tests + offline eval suite + ruff, gated in GitHub Actions |
+| Containerization | `Dockerfile` (Tesseract + Poppler), `.streamlit/config.toml` |
+
+### Run the API
+
+```bash
+uvicorn smra.api:app --reload --port 8000
+# POST /query {"query": "Apple total net sales"} ; GET /health ; GET /audit
+```
+
+### Quality gate (run before every PR)
+
+```bash
+ruff check smra tests
+pytest
+python -m smra.eval.run_eval
+```
 
 Quick start
 -----------

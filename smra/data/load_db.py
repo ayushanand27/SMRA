@@ -3,13 +3,13 @@
 Example usage:
     python load_db.py --excel ../stock_market_data.xlsx --db smra.db --table stock_prices --set-columns
 """
-from pathlib import Path
 import argparse
+import sqlite3
 import sys
+from pathlib import Path
 from typing import List
 
 import pandas as pd
-import sqlite3
 
 DEFAULT_COLUMNS = [
     "symbol",

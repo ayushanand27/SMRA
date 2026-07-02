@@ -1,4 +1,6 @@
-import os, pickle
+import os
+import pickle
+
 from dotenv import load_dotenv
 
 load_dotenv()

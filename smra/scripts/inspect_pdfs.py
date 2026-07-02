@@ -5,6 +5,7 @@ smra_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(smra_root))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 PDF_DIR = smra_root / "pdfs"

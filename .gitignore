@@ -1,3 +1,41 @@
-smra/.env 
+# Secrets & local config
+smra/.env
+.env
+
+# Local docs / references
 /references
 smra/DEMO_SCRIPT.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Testing / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data artifacts (regenerated locally)
+smra/data/*.db
+smra/data/*.pkl
+smra/pdfs/*.pdf
+
+# Audit / logs
+smra/data/audit.db
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db

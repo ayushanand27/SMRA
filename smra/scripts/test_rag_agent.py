@@ -1,6 +1,6 @@
-import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 script_dir = Path(__file__).resolve().parent
@@ -23,7 +23,7 @@ print(f"Running RAG agent query: {q}\n")
 
 try:
     r = run_rag_agent(q)
-except Exception as e:
+except Exception:
     print("ERROR while running run_rag_agent:")
     raise
 

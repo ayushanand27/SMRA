@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.github/
+.venv/
+venv/
+tests/
+*.md
+smra/.env
+smra/pdfs/*.pdf
+smra/data/*.db
+smra/data/*.pkl
+.pytest_cache/
+.ruff_cache/
+agent-tools/

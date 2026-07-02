@@ -1,13 +1,33 @@
-import os
-import json
-import time
 import logging
+import os
 import re
 from pathlib import Path
+
 try:
+    from smra.utils.config import get_settings
+    from smra.utils.faithfulness import check_numeric_grounding
     from smra.utils.llm import call_llm
+    from smra.utils.retrieval import hybrid_retrieve
+    from smra.utils.schemas import error_response, success_response
 except (ModuleNotFoundError, ImportError):
+    from utils.config import get_settings
+    from utils.faithfulness import check_numeric_grounding
     from utils.llm import call_llm
+    from utils.retrieval import hybrid_retrieve
+    from utils.schemas import error_response, success_response
+
+
+def _apply_faithfulness(answer: str, context: str) -> tuple[str, dict]:
+    """Attach a grounding caveat when the answer's numbers are not in context."""
+    result = check_numeric_grounding(answer, context)
+    meta = {"grounded": result.grounded, "faithfulness_score": result.score}
+    if not result.grounded and result.unsupported_numbers:
+        answer = (
+            f"{answer}\n\n_Note: some figures in this answer could not be verified "
+            f"against the retrieved filing text and may be OCR artifacts._"
+        )
+        meta["unsupported_numbers"] = result.unsupported_numbers
+    return answer, meta
 
 # Load .env relative to the smra/ package so scripts work no matter the CWD.
 try:
@@ -26,7 +46,7 @@ except Exception:
 RAG_SYSTEM = """You are analyzing OCR-extracted text from Apple and NVIDIA SEC filings.
 
 The text comes from scanned PDFs so it may contain:
-- Irregular spacing and line breaks  
+- Irregular spacing and line breaks
 - OCR artifacts like '|' instead of numbers, garbled words
 - Tables formatted as plain text
 
@@ -50,8 +70,9 @@ def _get_embeddings(use_cache=True):
     if use_cache and _embeddings_cache is not None:
         return _embeddings_cache
     try:
-        from langchain_huggingface import HuggingFaceEmbeddings
         import os
+
+        from langchain_huggingface import HuggingFaceEmbeddings
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
         emb = HuggingFaceEmbeddings(
@@ -227,6 +248,7 @@ def run_rag_agent(user_question: str) -> dict:
             """Search the local rag_local_store.pkl using cosine similarity and return rows like (text, meta, score)."""
             try:
                 import pickle
+
                 import numpy as np
             except Exception:
                 return []
@@ -262,18 +284,22 @@ def run_rag_agent(user_question: str) -> dict:
             rows = [(texts[i], metadatas[i], float(scores[i])) for i in idxs]
             return rows
 
+        settings = get_settings()
+
         # 2) If Pinecone disabled, fallback to local store (existing behavior)
         if _env_bool("PINECONE_DISABLED", False):
-            rows = _local_search(rewritten, k=top_k)
-            if not rows:
+            raw_rows = _local_search(rewritten, k=max(top_k * 3, top_k))
+            if not raw_rows:
                 logger.info("No relevant content found in local RAG store for query: %s", rewritten)
-                return {"ok": False, "error": {"msg": "No relevant content found.", "type": "exec"}, "fallback": True}
+                return error_response("No relevant content found.", error_type="exec", fallback=True)
 
-            best_score = rows[0][2]
-            if best_score < 0.5:
+            best_score = max(r[2] for r in raw_rows)
+            if best_score < settings.rag_score_threshold:
                 logger.info("Best local RAG score below threshold: %s", best_score)
-                return {"ok": False, "error": {"msg": "Low similarity; trigger web fallback", "type": "exec"}, "fallback": True}
+                return error_response("Low similarity; trigger web fallback", error_type="exec", fallback=True)
 
+            # Hybrid fusion (dense + BM25) then cross-encoder rerank when available
+            rows = hybrid_retrieve(rewritten, raw_rows, top_k=top_k)
             context = "\n\n---\n\n".join([f"[{(m or {}).get('source','Unknown')} p{(m or {}).get('page','?')}]\n{t}" for t, m, _ in rows])
             sources = sorted({(m or {}).get("source", "Unknown") for _, m, _ in rows})
             scores = [r[2] for r in rows]
@@ -286,12 +312,20 @@ def run_rag_agent(user_question: str) -> dict:
 
 Question: {user_question}
 
-Instructions: The numbers above come directly from the filing. 
+Instructions: The numbers above come directly from the filing.
 Report what you find. For 'total net sales' look for '383,285' or '394,328' (in millions).
 Answer directly with the specific figures."""
 
             answer = call_llm(RAG_SYSTEM, direct_prompt)
-            return {"ok": True, "answer": answer, "data": rows, "meta": {"sources": sources, "scores": scores}}
+            answer, faith_meta = _apply_faithfulness(answer, context)
+            result = success_response(
+                answer=answer,
+                data=rows,
+                meta={"sources": sources, "scores": scores, **faith_meta},
+            )
+            result["sources"] = sources
+            result["scores"] = scores
+            return result
 
         # 3) Use Pinecone, but fall back to local store if Pinecone returns nothing or fails
         try:
@@ -307,7 +341,7 @@ Answer directly with the specific figures."""
                     logger.exception("Failed to compute Pinecone query embedding: %s", e2)
                     raise
 
-            rows = _similarity_search_with_score_index(index, namespace, qv, top_k=top_k)
+            rows = _similarity_search_with_score_index(index, namespace, qv, top_k=max(top_k * 3, top_k))
         except Exception as e:
             logger.warning("Pinecone query failed, falling back to local search: %s", e)
             rows = []
@@ -315,17 +349,20 @@ Answer directly with the specific figures."""
         # If Pinecone returned no rows, try local search
         if not rows:
             logger.info("No relevant content found in Pinecone; attempting local fallback for query: %s", rewritten)
-            rows = _local_search(rewritten, k=top_k)
+            rows = _local_search(rewritten, k=max(top_k * 3, top_k))
 
         if not rows:
             logger.info("No relevant content found after local fallback for query: %s", rewritten)
-            return {"ok": False, "error": {"msg": "No relevant content found in the filings.", "type": "exec"}, "fallback": True}
+            return error_response("No relevant content found in the filings.", error_type="exec", fallback=True)
 
         # Determine best score and handle web fallback
         best_score = max(r[2] for r in rows)
-        if best_score < 0.5:
+        if best_score < settings.rag_score_threshold:
             logger.info("Best RAG score below threshold: %s", best_score)
-            return {"ok": False, "error": {"msg": "Low similarity; trigger web fallback", "type": "exec"}, "fallback": True}
+            return error_response("Low similarity; trigger web fallback", error_type="exec", fallback=True)
+
+        # Hybrid fusion (dense + BM25) then cross-encoder rerank when available
+        rows = hybrid_retrieve(rewritten, rows, top_k=top_k)
 
         # Build context and include page numbers in citations
         context_parts = []
@@ -375,7 +412,7 @@ Answer directly with the specific figures."""
 
     Question: {user_question}
 
-    Instructions: The numbers above come directly from the filing. 
+    Instructions: The numbers above come directly from the filing.
     Report what you find. For 'total net sales' look for '383,285' or '394,328' (in millions).
     Answer directly with the specific figures."""
 
@@ -388,8 +425,16 @@ Answer directly with the specific figures."""
             rescue = call_llm(rescue_prompt, f"Context:\n{context}\n\nQuestion: {user_question}")
             if rescue and "i couldn't find that in the available filings" not in rescue.strip().lower():
                 answer = rescue
-        return {"ok": True, "answer": answer, "data": rows, "meta": {"sources": sources, "scores": scores}}
+        answer, faith_meta = _apply_faithfulness(answer, context)
+        result = success_response(
+            answer=answer,
+            data=rows,
+            meta={"sources": sources, "scores": scores, **faith_meta},
+        )
+        result["sources"] = sources
+        result["scores"] = scores
+        return result
 
     except Exception as e:
         logger.exception("RAG error: %s", e)
-        return {"ok": False, "error": {"msg": f"RAG error: {str(e)}", "type": "exec"}, "fallback": True}
+        return error_response(f"RAG error: {str(e)}", error_type="exec", fallback=True)
