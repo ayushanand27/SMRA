@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 try:
+    from smra import ui
     from smra.agents.rag_agent import run_rag_agent
     from smra.agents.sql_agent import run_sql_agent
     from smra.agents.web_agent import run_web_agent
@@ -28,6 +29,7 @@ try:
     from smra.utils.observability import configure_logging, get_query_id, new_query_id
     from smra.utils.schemas import expand_routes
 except (ModuleNotFoundError, ImportError):
+    import ui
     from agents.rag_agent import run_rag_agent
     from agents.sql_agent import run_sql_agent
     from agents.web_agent import run_web_agent
@@ -84,17 +86,22 @@ def _pdf_count() -> int:
     return len(list(pdf_dir.glob("*.pdf")))
 
 
+def _collect_sources(result: dict) -> list:
+    meta = (result or {}).get("meta", {}) if isinstance((result or {}).get("meta"), dict) else {}
+    return meta.get("sources") or (result or {}).get("sources", []) or []
+
+
 def _render_sql_details(result: dict) -> None:
     df = result.get("data")
     if isinstance(df, pd.DataFrame) and not df.empty and "date" in df.columns and "close" in df.columns:
         fig = go.Figure()
         try:
             fig.add_scatter(x=df["date"], y=df["close"], mode="lines", name="close")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(ui.style_plotly(fig), use_container_width=True)
         except Exception:
             logger.exception("Failed to plot DataFrame result")
 
-    with st.expander("SQL Query used"):
+    with st.expander("SQL query used"):
         st.code(result.get("sql") or result.get("meta", {}).get("sql", "No SQL available"), language="sql")
 
 
@@ -105,22 +112,17 @@ def _render_sql_result(prompt: str, result: dict) -> None:
 
 def _render_rag_details(result: dict) -> None:
     meta = (result or {}).get("meta", {}) if isinstance((result or {}).get("meta"), dict) else {}
-    source_urls = [u for u in meta.get("sources", []) if u and str(u).startswith("http")]
-    if not source_urls:
-        srcs = meta.get("sources") or (result or {}).get("sources", [])
-        if srcs:
-            clean = [os.path.basename(str(s)) for s in srcs]
-            st.caption(f"Filing sources: {', '.join(clean)}")
-
+    ui.render_grounding(meta)
     scores = meta.get("scores") or (result or {}).get("scores", [])
     if scores:
         avg = sum(scores) / len(scores)
-        st.progress(min(max(int(avg * 100), 0), 100))
+        st.progress(min(max(int(avg * 100), 0), 100), text="Retrieval confidence")
+    ui.render_sources(_collect_sources(result), title="Filing sources")
 
 
 def _render_rag_result(prompt: str, result: dict) -> dict:
     if isinstance(result, dict) and result.get("fallback"):
-        st.warning("RAG did not find high-confidence matches — falling back to web search.")
+        st.info("No high-confidence filing match — falling back to live web search.")
         with st.spinner("Searching web as fallback..."):
             result = run_web_agent(prompt)
 
@@ -131,25 +133,14 @@ def _render_rag_result(prompt: str, result: dict) -> dict:
         st.markdown(answer)
 
     meta = (result or {}).get("meta", {}) if isinstance((result or {}).get("meta"), dict) else {}
-    source_urls = [u for u in meta.get("sources", []) if u and str(u).startswith("http")]
-    if not source_urls:
-        source_urls = [u for u in ((result or {}).get("sources", []) or []) if u and str(u).startswith("http")]
-
-    if source_urls:
-        st.markdown("**Sources**")
-        for idx, url in enumerate(source_urls[:5], start=1):
-            st.markdown(f"{idx}. [{url}]({url})")
-    else:
-        srcs = meta.get("sources") or (result or {}).get("sources", [])
-        if srcs:
-            clean = [os.path.basename(str(s)) for s in srcs]
-            st.caption(f"Filing sources: {', '.join(clean)}")
+    ui.render_grounding(meta)
 
     scores = meta.get("scores") or (result or {}).get("scores", [])
     if scores:
         avg = sum(scores) / len(scores)
-        st.progress(min(max(int(avg * 100), 0), 100))
+        st.progress(min(max(int(avg * 100), 0), 100), text="Retrieval confidence")
 
+    ui.render_sources(_collect_sources(result))
     return result
 
 
@@ -159,32 +150,37 @@ def _render_web_result(result: dict) -> None:
         st.error("No answer returned. Please wait a moment and try again.")
     else:
         st.markdown(answer)
-
-    meta = (result or {}).get("meta", {}) if isinstance((result or {}).get("meta"), dict) else {}
-    source_urls = [u for u in meta.get("sources", result.get("sources", [])) if u]
-    if source_urls:
-        st.markdown("**Sources**")
-        for idx, url in enumerate(source_urls[:10], start=1):
-            st.markdown(f"{idx}. [{url}]({url})")
+    ui.render_sources(_collect_sources(result), limit=10)
 
 
 def main():
     settings = get_settings()
     configure_logging(level=settings.log_level, json_logs=settings.json_logs)
-    st.set_page_config(page_title="SMRA", page_icon="📈", layout="wide")
-    st.title("📈 Stock Market Research Assistant")
-    st.caption("RAG + SQL + Live Web — interactive research")
+    st.set_page_config(page_title="SMRA — Research Assistant", page_icon="📈", layout="wide")
+
+    ui.inject_theme()
+
+    provider = os.getenv("LLM_PROVIDER", "groq")
+    ui.render_hero(provider)
 
     with st.sidebar:
-        st.markdown("### Dataset & Environment")
-        st.write("Rows in DB:", _db_row_count())
-        st.write("PDFs ingested:", _pdf_count())
-        st.write("LLM provider:", os.getenv("LLM_PROVIDER", "groq"))
-        with st.expander("How it works"):
-            st.write(
-                "This app routes questions to a SQL agent (historical data), RAG agent (company filings), "
-                "or Web agent (news). HYBRID runs SQL + RAG and synthesizes one answer."
-            )
+        st.markdown('<div class="smra-side-title">Workspace</div>', unsafe_allow_html=True)
+        ui.render_metric("Market rows", f"{_db_row_count():,}")
+        ui.render_metric("Filings ingested", _pdf_count(), unit="PDFs")
+        ui.render_metric("LLM provider", provider.upper())
+        st.markdown('<div class="smra-side-title" style="margin-top:18px">Capabilities</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:13px;color:#9a9aae;line-height:1.7">'
+            "• <b style='color:#3b82f6'>SQL</b> — historical OHLCV & market data<br>"
+            "• <b style='color:#8b5cf6'>RAG</b> — 10-K / filings with citations<br>"
+            "• <b style='color:#f59e0b'>WEB</b> — live news & sentiment<br>"
+            "• <b style='color:#10b981'>HYBRID</b> — fused, synthesized answer"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Clear conversation", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -195,6 +191,8 @@ def main():
 
     if prompt := st.chat_input("Ask about any stock, sector, or filing..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
         with st.chat_message("assistant"):
             new_query_id()
@@ -204,7 +202,7 @@ def main():
                 st.stop()
             prompt = guard.text
             routes = classify_intent(prompt)
-            st.caption(f"🔍 Routing to: {', '.join(routes)}")
+            ui.render_route_badges(routes)
 
             with st.expander("Why this route?"):
                 st.write(_why_this_route(routes))
