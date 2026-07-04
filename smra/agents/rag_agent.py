@@ -4,13 +4,11 @@ import re
 from pathlib import Path
 
 try:
-    from smra.utils.config import get_settings
     from smra.utils.faithfulness import check_numeric_grounding
     from smra.utils.llm import call_llm
     from smra.utils.retrieval import hybrid_retrieve
     from smra.utils.schemas import error_response, success_response
 except (ModuleNotFoundError, ImportError):
-    from utils.config import get_settings
     from utils.faithfulness import check_numeric_grounding
     from utils.retrieval import hybrid_retrieve
     from utils.schemas import error_response, success_response

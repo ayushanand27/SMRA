@@ -51,8 +51,13 @@ except (ModuleNotFoundError, ImportError):
     from orchestrator import synthesize_hybrid_answer
     from router import classify_intent
     from utils.config import get_settings
-    from utils.friendly_errors import friendly_rag_message, friendly_web_message
-    from utils.friendly_errors import agent_error_answer, friendly_llm_message, safe_agent_call
+    from utils.friendly_errors import (
+        agent_error_answer,
+        friendly_llm_message,
+        friendly_rag_message,
+        friendly_web_message,
+        safe_agent_call,
+    )
     from utils.guardrails import check_input, sanitize_output
     from utils.observability import configure_logging, get_query_id, new_query_id
     from utils.schemas import expand_routes

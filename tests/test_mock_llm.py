@@ -1,5 +1,4 @@
 """Tests for MOCK_MODE LLM stubs and SQL normalization."""
-import pytest
 
 
 def test_mock_mode_off_by_default(monkeypatch):
