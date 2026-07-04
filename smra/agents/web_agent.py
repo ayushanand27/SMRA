@@ -43,7 +43,11 @@ def run_web_agent(user_question: str) -> dict:
         articles = search.get("results", [])
     except Exception as exc:
         logger.exception("Tavily search failed")
-        return error_response(f"Web search failed: {exc}", error_type="io", fallback=False)
+        try:
+            from smra.utils.friendly_errors import friendly_web_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_web_message
+        return error_response(friendly_web_message(exc), error_type="io", fallback=False)
 
     if not articles:
         return success_response(

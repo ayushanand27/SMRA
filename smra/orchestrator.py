@@ -33,8 +33,13 @@ def synthesize_hybrid_answer(user_question: str, sql_result: dict, rag_result: d
         )
         try:
             return call_llm(HYBRID_SYNTHESIS_SYSTEM, prompt).strip()
-        except Exception:
+        except Exception as exc:
             logger.exception("Hybrid synthesis LLM call failed")
+            try:
+                from smra.utils.friendly_errors import friendly_llm_message
+            except (ModuleNotFoundError, ImportError):
+                from utils.friendly_errors import friendly_llm_message
+            return friendly_llm_message(exc)
 
     parts = []
     if sql_answer:

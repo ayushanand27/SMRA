@@ -78,12 +78,35 @@ class Settings:
     auth_enabled: bool = field(default_factory=lambda: _env_bool("AUTH_ENABLED", False))
     rate_limit_per_min: int = field(default_factory=lambda: _env_int("RATE_LIMIT_PER_MIN", 30))
     rate_limit_enabled: bool = field(default_factory=lambda: _env_bool("RATE_LIMIT_ENABLED", True))
+    redis_url: str = field(
+        default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379").strip()
+    )
 
     # Streamlit UI gate (optional shared password)
     ui_password: str = field(default_factory=lambda: os.getenv("UI_PASSWORD", ""))
 
-    # Paths
+    # Database (stock_prices)
+    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     db_path: str = field(default_factory=lambda: os.getenv("DATABASE_PATH", str(SMRA_ROOT / "data" / "smra.db")))
+
+    # Live ingestion (Postgres + yfinance)
+    ingestion_enabled: bool = field(default_factory=lambda: _env_bool("INGESTION_ENABLED", True))
+    ingestion_interval_min: int = field(default_factory=lambda: _env_int("INGESTION_INTERVAL_MIN", 30))
+
+    # Read query TTL cache (defaults to ingestion interval)
+    query_cache_enabled: bool = field(default_factory=lambda: _env_bool("QUERY_CACHE_ENABLED", True))
+    cache_ttl_seconds: int = field(
+        default_factory=lambda: _env_int(
+            "CACHE_TTL_SECONDS",
+            _env_int("INGESTION_INTERVAL_MIN", 30) * 60,
+        )
+    )
+
+    # Semantic answer cache (opt-in; exact match first, then embedding similarity)
+    semantic_cache_enabled: bool = field(default_factory=lambda: _env_bool("SEMANTIC_CACHE_ENABLED", False))
+    semantic_cache_threshold: float = field(default_factory=lambda: _env_float("SEMANTIC_CACHE_THRESHOLD", 0.80))
+    semantic_cache_ttl_seconds: int = field(default_factory=lambda: _env_int("SEMANTIC_CACHE_TTL_SECONDS", 3600))
+    semantic_cache_max_entries: int = field(default_factory=lambda: _env_int("SEMANTIC_CACHE_MAX_ENTRIES", 200))
 
     @property
     def supported_providers(self) -> List[str]:

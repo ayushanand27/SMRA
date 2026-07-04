@@ -45,8 +45,15 @@ def _call_groq(system_prompt: str, user_prompt: str, model: str, max_tokens: int
 
         except Exception as exc:
             last_exc = exc
-            err_str = str(exc)
+            err_str = str(exc).lower()
             logger.warning("Groq attempt %s failed: %s", attempt, err_str[:120])
+
+            # Auth failures are not transient — fail fast instead of 5× retry (~40s).
+            if any(
+                token in err_str
+                for token in ("401", "403", "invalid api key", "invalid_api_key", "authentication")
+            ):
+                break
 
             match = re.search(r"try again in (\d+(?:\.\d+)?)s", err_str)
             wait = float(match.group(1)) + 1 if match else wait_seconds

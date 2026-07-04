@@ -40,7 +40,7 @@ def error_response(msg: str, error_type: str = "exec", fallback: bool = True, sq
     """Return a dict matching the AgentResponse error schema."""
     resp = AgentResponse(
         ok=False,
-        answer="",
+        answer=msg,
         data=None,
         meta={},
         fallback=fallback,

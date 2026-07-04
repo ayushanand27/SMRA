@@ -1,3 +1,13 @@
+"""Ingest all PDFs in smra/pdfs/ into local RAG store + Pinecone.
+
+Processes every *.pdf in the folder (not hardcoded to apple/nvidia). Clears the
+Pinecone index and re-uploads the full corpus each run — keep all PDFs you want
+indexed in smra/pdfs/ before running.
+
+Usage (from repo root):
+    python smra/scripts/ingest_pdfs.py
+"""
+import argparse
 import logging
 import os
 import pickle
@@ -89,22 +99,28 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
     return chunks
 
 
-# Map common issuer names/tickers seen in filenames to a canonical ticker.
-_TICKER_HINTS = {
-    "apple": "AAPL",
-    "aapl": "AAPL",
-    "nvidia": "NVDA",
-    "nvda": "NVDA",
-    "tesla": "TSLA",
-    "tsla": "TSLA",
-    "microsoft": "MSFT",
-    "msft": "MSFT",
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "amazon": "AMZN",
-    "amzn": "AMZN",
-    "meta": "META",
-}
+# Map issuer names in filenames (and early-page text) to canonical tickers.
+# Order matters: longer/more-specific hints should appear before shorter ones.
+_TICKER_HINTS = (
+    ("jpmorgan", "JPM"),
+    ("jp morgan", "JPM"),
+    ("jpm", "JPM"),
+    ("reliance", "RELIANCE.NS"),
+    ("microsoft", "MSFT"),
+    ("nvidia", "NVDA"),
+    ("amazon", "AMZN"),
+    ("alphabet", "GOOGL"),
+    ("apple", "AAPL"),
+    ("tesla", "TSLA"),
+    ("tcs", "TCS.NS"),
+    ("msft", "MSFT"),
+    ("nvda", "NVDA"),
+    ("amzn", "AMZN"),
+    ("aapl", "AAPL"),
+    ("tsla", "TSLA"),
+    ("google", "GOOGL"),
+    ("meta", "META"),
+)
 
 
 def extract_doc_metadata(filename: str, text: str) -> dict:
@@ -117,14 +133,16 @@ def extract_doc_metadata(filename: str, text: str) -> dict:
     sample = (text or "")[:2000].lower()
 
     ticker = ""
-    for hint, sym in _TICKER_HINTS.items():
+    for hint, sym in _TICKER_HINTS:
         if hint in name_l or hint in sample:
             ticker = sym
             break
 
     doc_type = "unknown"
-    if "10-k" in name_l or "10k" in name_l or "10-k" in sample or "annual report" in sample:
+    if "10-k" in name_l or "10k" in name_l or "10-k" in sample:
         doc_type = "10-K"
+    elif "integrated annual report" in sample or "annual report" in name_l or "annual report" in sample:
+        doc_type = "annual_report"
     elif "10-q" in name_l or "10q" in name_l or "10-q" in sample:
         doc_type = "10-Q"
     elif "8-k" in name_l or "8k" in name_l:
@@ -158,12 +176,12 @@ def ingest_pdfs(pdf_folder: str):
         except Exception:
             Pinecone = None
 
-    pdf_files = list(Path(pdf_folder).glob("*.pdf"))
+    pdf_files = sorted(Path(pdf_folder).glob("*.pdf"))
     if not pdf_files:
         logger.error("No PDFs found!")
         return
 
-    logger.info(f"Found {len(pdf_files)} PDF files")
+    logger.info("Found %s PDF files: %s", len(pdf_files), ", ".join(p.name for p in pdf_files))
 
     all_docs = []
     for pdf_path in pdf_files:
@@ -253,7 +271,19 @@ def ingest_pdfs(pdf_folder: str):
 
 
 if __name__ == "__main__":
-    pdf_dir = smra_root / "pdfs"
-    logger.info(f"Starting ingestion from: {pdf_dir}")
+    parser = argparse.ArgumentParser(
+        description="Chunk, embed, and upload all PDFs in smra/pdfs/ to Pinecone + local pickle."
+    )
+    parser.add_argument(
+        "--pdf-dir",
+        default=str(smra_root / "pdfs"),
+        help="Folder containing *.pdf filings (default: smra/pdfs)",
+    )
+    args = parser.parse_args()
+    pdf_dir = Path(args.pdf_dir)
+    if not pdf_dir.is_dir():
+        logger.error("PDF folder not found: %s", pdf_dir)
+        raise SystemExit(1)
+    logger.info("Starting ingestion from: %s", pdf_dir)
     ingest_pdfs(str(pdf_dir))
 

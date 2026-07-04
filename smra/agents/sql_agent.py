@@ -1,37 +1,38 @@
 import logging
-import os
 import re
-import sqlite3
 from typing import Optional
 
 import pandas as pd
 
 try:
+    from smra.utils.currency import build_synthesis_notes, enrich_dataframe_currency
+    from smra.utils.db import read_sql_query
     from smra.utils.llm import call_llm
     from smra.utils.schemas import error_response, success_response
 except (ModuleNotFoundError, ImportError):
+    from utils.currency import build_synthesis_notes, enrich_dataframe_currency
+    from utils.db import read_sql_query
     from utils.schemas import error_response, success_response
 
     from utils.llm import call_llm
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "smra.db"))
-
 SCHEMA = """
-SQLite table: stock_prices
+Table: stock_prices
 Columns:
-  symbol     TEXT    -- ticker e.g. AAPL, NVDA, TSLA
+  symbol     TEXT    -- US tickers e.g. AAPL, NVDA; NSE tickers use .NS suffix e.g. RELIANCE.NS
   company    TEXT    -- full company name
-  sector     TEXT    -- Technology, Financials, Healthcare, Energy, Consumer Disc., Consumer Staples
+  sector     TEXT    -- Technology, Financials, Healthcare, Energy, Consumer Disc., Consumer Staples, etc.
   date       TEXT    -- YYYY-MM-DD string e.g. '2025-01-03'
-  open       REAL    -- opening price
-  high       REAL    -- intraday high
-  low        REAL    -- intraday low
-  close      REAL    -- closing price
+  open       REAL    -- opening price in native currency
+  high       REAL    -- intraday high (native currency)
+  low        REAL    -- intraday low (native currency)
+  close      REAL    -- closing price (native currency)
   volume     INTEGER -- shares traded
-  marketcap  REAL    -- market cap in billions USD
+  marketcap  REAL    -- market cap in billions; units match the currency column (not comparable across currencies)
+  currency   TEXT    -- 'USD' (US tickers) or 'INR' (*.NS NSE tickers); always SELECT with price/marketcap fields
 """
 
-SQL_SYSTEM = f"""You are an expert SQLite query writer.
+SQL_SYSTEM = f"""You are an expert SQL query writer.
 Given this schema:
 {SCHEMA}
 
@@ -40,6 +41,11 @@ Rules:
 - Always use ORDER BY date for time series
 - For moving averages, fetch enough rows (e.g. LIMIT 100 for 20-day MA)
 - Dates are stored as TEXT strings in 'YYYY-MM-DD' format. Always use exact string match e.g. WHERE date = '2025-01-03'
+- Always include the currency column when selecting symbol, close, open, high, low, or marketcap
+- Do not compare price or marketcap numerically across rows with different currency values unless the user
+  explicitly asks for a cross-currency comparison; if they do, still SELECT currency and note no FX conversion exists
+- For "top N by marketcap" or cross-market rankings, include currency in SELECT; prefer filtering
+  WHERE currency = 'USD' or WHERE currency = 'INR' when the user asks about one market only
 - Never use semicolons at the end
 - Never use DROP, DELETE, INSERT, UPDATE, ALTER, ATTACH, or PRAGMA
 """
@@ -48,6 +54,14 @@ SYNTHESIS_SYSTEM = """You are a financial analyst assistant.
 Given a SQL query result, write a clear 2-4 sentence answer.
 Include specific numbers. Be direct and factual.
 Do not give investment advice.
+
+Currency rules (mandatory):
+- Label every price/marketcap using the currency column value for that row (USD → $ ; INR → ₹ or "INR")
+- Do NOT infer currency from the symbol suffix when the currency column is present in the result
+- Never label INR amounts with $ or "USD"
+- marketcap values are in billions of that row's currency
+- If results mix USD and INR (especially marketcap rankings), state explicitly that values are
+  NOT directly comparable across currencies; no FX conversion is applied in this database
 """
 
 _BANNED_SQL = re.compile(
@@ -81,14 +95,25 @@ def _extract_symbol_from_sql(sql_query: str) -> Optional[str]:
 def _run_fallback_query(symbol: str) -> tuple[pd.DataFrame, str]:
     """Parameterized fallback when the primary query returns no rows."""
     fallback_sql = (
-        "SELECT symbol, date, close FROM stock_prices WHERE symbol = ? ORDER BY date ASC LIMIT 1"
+        "SELECT symbol, date, close FROM stock_prices "
+        "WHERE symbol = :symbol ORDER BY date ASC LIMIT 1"
     )
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        df = pd.read_sql_query(fallback_sql, conn, params=(symbol,))
-    finally:
-        conn.close()
-    return df, fallback_sql
+    df = read_sql_query(fallback_sql, params={"symbol": symbol})
+    return enrich_dataframe_currency(df), fallback_sql
+
+
+def _build_synthesis_prompt(user_question: str, df: pd.DataFrame) -> str:
+    enriched = enrich_dataframe_currency(df)
+    preview = enriched.head(20).to_string(index=False)
+    notes = build_synthesis_notes(user_question, enriched)
+    parts = [f"User question: {user_question}", "", f"Query result (top rows):\n{preview}"]
+    if notes:
+        parts.extend(["", "Synthesis instructions:", notes])
+    return "\n".join(parts)
+
+
+def _empty_llm_output(text: str | None) -> bool:
+    return not (text or "").strip()
 
 
 def run_sql_agent(user_question: str) -> dict:
@@ -100,12 +125,28 @@ def run_sql_agent(user_question: str) -> dict:
         sql_query = call_llm(SQL_SYSTEM, f"Question: {user_question}")
     except Exception as exc:
         logger.exception("LLM failed to generate SQL")
-        err = error_response(f"Failed to generate SQL: {exc}", error_type="llm", fallback=True)
+        try:
+            from smra.utils.friendly_errors import friendly_llm_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_llm_message
+        err = error_response(friendly_llm_message(exc), error_type="llm", fallback=True)
         err["sql"] = sql_query
         return err
 
     sql_query = sql_query.strip().replace("```sql", "").replace("```", "").strip().rstrip("; ")
     logger.info("Generated SQL: %s", sql_query)
+
+    if _empty_llm_output(sql_query):
+        try:
+            from smra.utils.friendly_errors import friendly_llm_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_llm_message
+        return error_response(
+            friendly_llm_message(RuntimeError("empty LLM response")),
+            error_type="llm",
+            fallback=True,
+            sql=sql_query,
+        )
 
     if not _is_sql_safe(sql_query):
         logger.warning("Generated SQL failed safety check: %s", sql_query)
@@ -124,9 +165,7 @@ def run_sql_agent(user_question: str) -> dict:
 
     while attempt < max_attempts:
         try:
-            conn = sqlite3.connect(DB_PATH)
-            df = pd.read_sql_query(sql_query, conn)
-            conn.close()
+            df = read_sql_query(sql_query)
             last_exc = None
             break
         except Exception as exc:
@@ -153,14 +192,19 @@ def run_sql_agent(user_question: str) -> dict:
                 break
 
     if last_exc is not None:
+        try:
+            from smra.utils.friendly_errors import friendly_db_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_db_message
         err = error_response(
-            f"I couldn't execute the query. Error: {last_exc}",
+            friendly_db_message(last_exc),
             error_type="exec",
             fallback=True,
             sql=sql_query,
         )
         return err
 
+    df = enrich_dataframe_currency(df)
     row_count = len(df)
     confidence = _confidence_from_rows(row_count)
 
@@ -178,14 +222,26 @@ def run_sql_agent(user_question: str) -> dict:
             logger.exception("Fallback query failed for symbol=%s", symbol)
 
     try:
-        data_preview = df.head(20).to_string(index=False)
-        answer = call_llm(
-            SYNTHESIS_SYSTEM,
-            f"User question: {user_question}\n\nQuery result (top rows):\n{data_preview}",
-        )
-    except Exception:
+        answer = call_llm(SYNTHESIS_SYSTEM, _build_synthesis_prompt(user_question, df))
+    except Exception as exc:
         logger.exception("LLM failed to synthesize answer")
-        answer = f"Query executed successfully. Returned {row_count} rows."
+        try:
+            from smra.utils.friendly_errors import friendly_llm_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_llm_message
+        return error_response(friendly_llm_message(exc), error_type="llm", fallback=True, sql=sql_query)
+
+    if _empty_llm_output(answer):
+        try:
+            from smra.utils.friendly_errors import friendly_llm_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_llm_message
+        return error_response(
+            friendly_llm_message(RuntimeError("empty synthesis response")),
+            error_type="llm",
+            fallback=True,
+            sql=sql_query,
+        )
 
     result = success_response(
         answer=answer,

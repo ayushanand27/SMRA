@@ -7,6 +7,7 @@ and provides a clean audited entry point. Run with:
 """
 import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -26,10 +27,18 @@ try:
     from smra.agents.rag_agent import run_rag_agent
     from smra.agents.sql_agent import run_sql_agent
     from smra.agents.web_agent import run_web_agent
+    from smra.cache.semantic_cache import get_cached_answer, set_cached_answer
     from smra.orchestrator import synthesize_hybrid_answer
     from smra.router import classify_intent
     from smra.utils import audit
     from smra.utils.config import get_settings
+    from smra.utils.friendly_errors import (
+        agent_error_answer,
+        friendly_llm_message,
+        friendly_rag_message,
+        friendly_web_message,
+        safe_agent_call,
+    )
     from smra.utils.guardrails import check_input, sanitize_output
     from smra.utils.observability import configure_logging, get_query_id, new_query_id
     from smra.utils.schemas import expand_routes
@@ -38,9 +47,12 @@ except (ModuleNotFoundError, ImportError):
     from agents.rag_agent import run_rag_agent
     from agents.sql_agent import run_sql_agent
     from agents.web_agent import run_web_agent
+    from cache.semantic_cache import get_cached_answer, set_cached_answer
     from orchestrator import synthesize_hybrid_answer
     from router import classify_intent
     from utils.config import get_settings
+    from utils.friendly_errors import friendly_rag_message, friendly_web_message
+    from utils.friendly_errors import agent_error_answer, friendly_llm_message, safe_agent_call
     from utils.guardrails import check_input, sanitize_output
     from utils.observability import configure_logging, get_query_id, new_query_id
     from utils.schemas import expand_routes
@@ -53,10 +65,25 @@ logger = logging.getLogger("smra.api")
 settings = get_settings()
 configure_logging(level=settings.log_level, json_logs=settings.json_logs)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start/stop background ingestion with the API process."""
+    try:
+        from smra.ingestion.scheduler import start_scheduler, stop_scheduler
+    except (ModuleNotFoundError, ImportError):
+        from ingestion.scheduler import start_scheduler, stop_scheduler
+
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
 app = FastAPI(
     title="SMRA API",
     description="Stock Market Research Assistant — RAG + Text-to-SQL + Web search",
-    version="0.4.0",
+    version="0.5.0",
+    lifespan=lifespan,
 )
 
 
@@ -97,7 +124,56 @@ def _to_urls(result: dict) -> list:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "provider": settings.llm_provider}
+    return {
+        "status": "ok",
+        "provider": settings.llm_provider,
+        "ingestion_enabled": settings.ingestion_enabled,
+        "postgres": bool(settings.database_url),
+    }
+
+
+def _agent_answer(result: dict, agent: str) -> str:
+    if not isinstance(result, dict):
+        return agent_error_answer(agent, RuntimeError("invalid agent response"))
+    if result.get("ok") is False:
+        msg = result.get("answer") or result.get("error", {}).get("msg", "")
+        if msg.strip():
+            return msg
+        return agent_error_answer(agent, RuntimeError("agent failed"))
+    answer = (result.get("answer") or "").strip()
+    if not answer:
+        return agent_error_answer(agent, RuntimeError("empty agent response"))
+    return answer
+
+
+def _agent_ok(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("ok") is False:
+        return False
+    return bool((result.get("answer") or "").strip())
+
+
+def _non_empty_answer(text: str, fallback: str) -> str:
+    cleaned = sanitize_output((text or "").strip())
+    if cleaned:
+        return cleaned
+    return fallback
+
+
+def _run_rag_with_web_fallback(prompt: str) -> dict:
+    result = safe_agent_call("RAG", run_rag_agent, prompt)
+    if not isinstance(result, dict):
+        return {"ok": False, "answer": friendly_rag_message(), "fallback": True}
+    if not result.get("fallback"):
+        return result
+    web = safe_agent_call("WEB", run_web_agent, prompt)
+    if isinstance(web, dict) and web.get("ok") is not False and (web.get("answer") or "").strip():
+        return web
+    combined = friendly_rag_message()
+    if isinstance(web, dict) and web.get("ok") is False:
+        combined = f"{combined} {friendly_web_message()}"
+    return {**result, "ok": False, "answer": result.get("answer") or combined, "fallback": True}
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -111,7 +187,42 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
         return QueryResponse(query_id=qid, routes=[], answer=f"Query rejected: {guard.reason}", ok=False)
 
     prompt = guard.text
-    routes = classify_intent(prompt)
+
+    cached = get_cached_answer(prompt)
+    if cached and (cached.get("answer") or "").strip():
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        cached_answer = _non_empty_answer(cached.get("answer", ""), "Cached response was empty.")
+        audit.record(
+            query_id=qid,
+            query=prompt,
+            routes=cached.get("routes", []),
+            answer=cached_answer,
+            sql=cached.get("sql", ""),
+            sources=cached.get("sources", []),
+            provider=settings.llm_provider,
+            latency_ms=latency_ms,
+            ok=True,
+        )
+        return QueryResponse(
+            query_id=get_query_id(),
+            routes=cached.get("routes", []),
+            answer=cached_answer,
+            sql=cached.get("sql", ""),
+            sources=cached.get("sources", []),
+            grounded=cached.get("grounded"),
+            ok=True,
+        )
+
+    try:
+        routes = classify_intent(prompt)
+    except Exception:
+        logger.exception("Router failed; using keyword fallback")
+        try:
+            from smra.utils.schemas import keyword_route_fallback
+        except (ModuleNotFoundError, ImportError):
+            from utils.schemas import keyword_route_fallback
+        routes = keyword_route_fallback(prompt)
+
     execution_routes = expand_routes(routes)
     is_hybrid = "HYBRID" in routes or ("SQL" in execution_routes and "RAG" in execution_routes)
 
@@ -119,36 +230,73 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
     sql = ""
     sources: list = []
     grounded: Optional[bool] = None
+    pipeline_ok = True
 
-    if is_hybrid:
-        sql_result = run_sql_agent(prompt)
-        rag_result = run_rag_agent(prompt)
-        if isinstance(rag_result, dict) and rag_result.get("fallback"):
-            rag_result = run_web_agent(prompt)
-        answer = synthesize_hybrid_answer(prompt, sql_result, rag_result)
-        sql = sql_result.get("sql", "")
-        sources = _to_urls(rag_result)
-        grounded = rag_result.get("meta", {}).get("grounded")
-    else:
-        for route in execution_routes:
-            if route == "SQL":
-                result = run_sql_agent(prompt)
-                answer = result.get("answer", "")
-                sql = result.get("sql", "")
-            elif route == "RAG":
-                result = run_rag_agent(prompt)
-                if isinstance(result, dict) and result.get("fallback"):
-                    result = run_web_agent(prompt)
-                answer = result.get("answer", "")
-                sources = _to_urls(result)
-                grounded = result.get("meta", {}).get("grounded")
-            elif route == "WEB":
-                result = run_web_agent(prompt)
-                answer = result.get("answer", "")
-                sources = _to_urls(result)
+    try:
+        if is_hybrid:
+            sql_result = safe_agent_call("SQL", run_sql_agent, prompt)
+            rag_result = _run_rag_with_web_fallback(prompt)
+            pipeline_ok = _agent_ok(sql_result if isinstance(sql_result, dict) else {}) and _agent_ok(
+                rag_result if isinstance(rag_result, dict) else {}
+            )
+            try:
+                answer = synthesize_hybrid_answer(
+                    prompt,
+                    sql_result if isinstance(sql_result, dict) else {},
+                    rag_result if isinstance(rag_result, dict) else {},
+                )
+            except Exception as exc:
+                logger.exception("Hybrid synthesis failed")
+                pipeline_ok = False
+                answer = friendly_llm_message(exc)
+                parts = []
+                if isinstance(sql_result, dict):
+                    parts.append(_agent_answer(sql_result, "SQL"))
+                if isinstance(rag_result, dict):
+                    parts.append(_agent_answer(rag_result, "RAG"))
+                if parts:
+                    answer = "\n\n".join(p for p in parts if p)
+            sql = (sql_result or {}).get("sql", "") if isinstance(sql_result, dict) else ""
+            sources = _to_urls(rag_result if isinstance(rag_result, dict) else {})
+            grounded = (rag_result or {}).get("meta", {}).get("grounded") if isinstance(rag_result, dict) else None
+        else:
+            for route in execution_routes:
+                if route == "SQL":
+                    result = safe_agent_call("SQL", run_sql_agent, prompt)
+                    answer = _agent_answer(result if isinstance(result, dict) else {}, "SQL")
+                    sql = (result or {}).get("sql", "") if isinstance(result, dict) else ""
+                    pipeline_ok = _agent_ok(result if isinstance(result, dict) else {})
+                elif route == "RAG":
+                    result = _run_rag_with_web_fallback(prompt)
+                    answer = _agent_answer(result if isinstance(result, dict) else {}, "RAG")
+                    sources = _to_urls(result if isinstance(result, dict) else {})
+                    grounded = (result or {}).get("meta", {}).get("grounded") if isinstance(result, dict) else None
+                    pipeline_ok = _agent_ok(result if isinstance(result, dict) else {})
+                elif route == "WEB":
+                    result = safe_agent_call("WEB", run_web_agent, prompt)
+                    answer = _agent_answer(result if isinstance(result, dict) else {}, "WEB")
+                    sources = _to_urls(result if isinstance(result, dict) else {})
+                    pipeline_ok = _agent_ok(result if isinstance(result, dict) else {})
+    except Exception as exc:
+        logger.exception("Unhandled query pipeline error")
+        pipeline_ok = False
+        answer = agent_error_answer("LLM", exc)
 
-    answer = sanitize_output(answer)
+    fallback_msg = "I couldn't generate an answer right now. Please try again."
+    answer = _non_empty_answer(answer, fallback_msg)
+    if answer == fallback_msg:
+        pipeline_ok = False
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
+
+    payload = {
+        "routes": routes,
+        "answer": answer,
+        "sql": sql,
+        "sources": sources,
+        "grounded": grounded,
+    }
+    if pipeline_ok:
+        set_cached_answer(prompt, payload)
 
     audit.record(
         query_id=qid,
@@ -159,7 +307,7 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
         sources=sources,
         provider=settings.llm_provider,
         latency_ms=latency_ms,
-        ok=True,
+        ok=pipeline_ok,
     )
 
     return QueryResponse(
@@ -169,7 +317,7 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
         sql=sql,
         sources=sources,
         grounded=grounded,
-        ok=True,
+        ok=pipeline_ok,
     )
 
 

@@ -1,0 +1,70 @@
+# One-command local stack: Postgres + Redis + FastAPI
+# Usage: copy smra/.env.example → smra/.env, fill API keys, then:
+#   docker compose up -d --build
+#
+# Streamlit (optional, host-only):
+#   python -m streamlit run smra/app.py --server.port 8501
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: smra-pg
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smra}
+      POSTGRES_DB: ${POSTGRES_DB:-smra}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
+    volumes:
+      - smra_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-smra}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: smra-redis
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smra-api
+    command: >
+      uvicorn smra.api:app
+      --host 0.0.0.0
+      --port 8010
+    ports:
+      - "${API_HOST_PORT:-8010}:8010"
+    env_file:
+      - smra/.env
+    environment:
+      # In-compose hostnames (override host-local URLs from .env)
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-smra}@postgres:5432/${POSTGRES_DB:-smra}
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./smra/data:/app/smra/data
+      - ./smra/pdfs:/app/smra/pdfs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  smra_pg_data:

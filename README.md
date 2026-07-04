@@ -1,380 +1,316 @@
 # Stock Market Research Assistant (SMRA)
 
-AI-powered investment research assistant using RAG + Text-to-SQL + Live Web Search.
+**SMRA** is a production-minded multi-agent financial research system: ask natural-language questions and get grounded answers from **structured market data**, **company filings**, and **live web search**. Built for engineers and researchers who need a credible demo of LLM orchestration, RAG, Text-to-SQL, and operational guardrails—not a toy chatbot.
 
-This repository contains a demo app (Streamlit + FastAPI) that demonstrates:
-- Natural language → SQL queries against a local SQLite stock prices DB
-- RAG over uploaded financial PDFs (Pinecone + local HuggingFace embeddings)
-- Live web search via Tavily
+Streamlit UI + FastAPI API · Groq/Ollama/Gemini · Postgres · Pinecone · Langfuse
 
-## Production-grade features
+---
 
-SMRA is engineered against current LLM/financial-AI standards
-([OWASP LLM Top 10](https://genai.owasp.org/llm-top-10/), OTel GenAI observability,
-faithfulness/citation grounding):
+## Architecture
 
-| Area | Implementation |
-|------|----------------|
-| Multi-agent routing | LLM router + deterministic keyword fallback (`router.py`, `utils/schemas.py`) |
-| HYBRID orchestration | Runs SQL + RAG and synthesizes one answer (`orchestrator.py`) |
-| Hybrid retrieval | Dense vectors + BM25 fusion + cross-encoder rerank (`utils/retrieval.py`) |
-| Faithfulness | Numeric grounding check; flags unverifiable figures (`utils/faithfulness.py`) |
-| Rich metadata | Chunks tagged with ticker / doc_type / fiscal_year (`scripts/ingest_pdfs.py`) |
-| Security guardrails | Prompt-injection + SQL-abuse filters, input limits, output sanitization (`utils/guardrails.py`) |
-| SQL safety | `SELECT`-only validation + parameterized queries (`agents/sql_agent.py`) |
-| Observability | Structured logs, latency, token & cost per call, `query_id` (`utils/observability.py`) |
-| Audit / replay | Every request persisted for reproducibility (`utils/audit.py`) |
-| Multi-provider LLM | Groq / Ollama / Gemini via `LLM_PROVIDER` (`utils/llm.py`) |
-| Config | Centralized env-driven settings (`utils/config.py`) |
-| HTTP API | FastAPI service: `/query`, `/health`, `/audit` (`api.py`) |
-| API auth & rate limiting | Optional `X-API-Key` auth + sliding-window rate limit (`utils/security.py`) |
-| Langfuse tracing | Optional managed LLM traces when `LANGFUSE_ENABLED=1` (`utils/langfuse_client.py`) |
-| LLM-judge evals | Answer-quality scoring via `--judge` (`eval/judge.py`, `eval/run_eval.py`) |
-| Testing & CI | 50+ unit tests + offline eval suite + ruff, gated in GitHub Actions |
-| Containerization | `Dockerfile` (Tesseract + Poppler), `.streamlit/config.toml` |
-
-### Run the API
-
-```bash
-uvicorn smra.api:app --reload --port 8000
-# POST /query {"query": "Apple total net sales"} ; GET /health ; GET /audit
-# Optional: AUTH_ENABLED=1 SMRA_API_KEYS=mykey curl -H "X-API-Key: mykey" ...
+```mermaid
+flowchart TB
+    U[User Query] --> UI[Streamlit UI / FastAPI]
+    UI --> GR[Input Guardrails]
+    GR --> R[Intent Router<br/>LLM + keyword fallback]
+    R --> SQL[SQL Agent<br/>NL → SELECT → synthesize]
+    R --> RAG[RAG Agent<br/>hybrid retrieval + citations]
+    R --> WEB[Web Agent<br/>Tavily live search]
+    R --> HY[HYBRID<br/>SQL + RAG orchestrator]
+    SQL --> PG[(Postgres<br/>stock_prices)]
+    RAG --> PC[(Pinecone<br/>8 filing PDFs)]
+    RAG -. fallback .-> PKL[rag_local_store.pkl]
+    WEB --> TV[Tavily API]
+    SQL --> LF[Langfuse traces]
+    RAG --> LF
+    WEB --> LF
+    HY --> LF
+    UI --> AUD[(SQLite audit.db)]
+    UI --> LOG[Structured logs<br/>query_id · latency · cost]
+    API --> REDIS[(Redis<br/>rate-limit store)]
+    API --> ING[APScheduler<br/>yfinance ingestion]
+    ING --> PG
 ```
 
-### Auth, rate limiting & UI gate
+**Request flow:** guardrails → router → specialist agent(s) → synthesis with citations → audit log. FastAPI also runs scheduled live ingestion when `DATABASE_URL` points at Postgres.
 
-Off by default for local dev. Enable via `smra/.env`:
+---
+
+## Key Features
+
+### Multi-agent routing & orchestration
+- LLM intent router (`SQL` / `RAG` / `WEB` / `HYBRID`) with deterministic keyword fallback
+- HYBRID mode runs SQL + RAG in parallel and synthesizes one coherent answer
+- Unified response schemas, expandable routes, and per-request `query_id` for tracing
+
+### Live market data (50 tickers · US + India)
+- **30 US** large-caps + **20 NSE** symbols (`.NS` suffix via yfinance)
+- Scheduled ingestion (APScheduler on FastAPI startup): fetch OHLCV + fundamentals → Postgres upsert
+- TTL read cache on SQL queries to reduce DB load between ingestion cycles
+- Explicit **`currency`** column (`USD` / `INR`)—no silent cross-currency comparison
+- SQLite fallback when `DATABASE_URL` is unset (local dev only)
+
+### RAG over 8 real company filings
+- PDFs: Apple, NVIDIA, Amazon, Microsoft, Tesla, JPMorgan Chase, TCS, Reliance
+- PyMuPDF text extraction + Tesseract OCR for scanned pages
+- Chunk metadata: `source`, `page`, `ticker`, `doc_type`, `fiscal_year`
+- Hybrid retrieval: dense vectors + BM25 fusion + cross-encoder rerank
+- Answers include **`[Source: filename, page X]`** citations; numeric faithfulness checks flag ungrounded figures
+
+### Security
+- OWASP LLM Top 10–aligned **input guardrails** (prompt injection, SQL abuse, length limits)
+- Output sanitization; SQL agent restricted to **`SELECT`-only** with banned-statement regex
+- Optional **`X-API-Key`** auth (constant-time comparison, fail-closed when enabled)
+- **Redis-backed sliding-window rate limiting** (`RATE_LIMIT_PER_MIN` per key/IP); graceful in-memory fallback if Redis is down
+
+### Observability & audit
+- Structured JSON logs: latency, token usage, estimated cost per LLM call
+- Optional **Langfuse** tracing on every `call_llm` invocation
+- SQLite **audit trail** (`/audit` API)—every query persisted for replay and debugging
+
+### Evaluation
+- Golden dataset for routing + guardrail regression (`smra/eval/golden_dataset.json`)
+- Offline eval runner in CI (`python -m smra.eval.run_eval`)
+- Optional **LLM-as-judge** scoring (`--judge`) for answer quality
+- Faithfulness helper validates numeric claims against retrieved context
+
+### Quality & delivery
+- **75** automated unit tests (pytest) + offline eval suite
+- **GitHub Actions CI:** ruff lint, pytest, golden evals
+- **Docker Compose** one-command Postgres + Redis + FastAPI stack
+- **Dockerfile** with Tesseract + Poppler for OCR-capable ingestion
+- Optional **semantic answer cache** (`SEMANTIC_CACHE_ENABLED`) for similar-query reuse
+
+---
+
+## Tech Stack
+
+| Category | Technologies |
+|----------|--------------|
+| **LLM / orchestration** | Groq, Ollama, Gemini (`LLM_PROVIDER`); LangChain (RAG ingestion); custom router + orchestrator |
+| **UI / API** | Streamlit, FastAPI, Uvicorn |
+| **Structured data** | PostgreSQL (primary), SQLAlchemy, psycopg2, yfinance, APScheduler |
+| **Vector store** | Pinecone (384-dim cosine); local `rag_local_store.pkl` fallback |
+| **Embeddings / retrieval** | `sentence-transformers/all-MiniLM-L6-v2`, BM25, cross-encoder rerank |
+| **Web search** | Tavily API |
+| **Document processing** | PyMuPDF, pytesseract, pdf2image, Poppler |
+| **Security / limits** | Custom guardrails, HMAC API keys, Redis sliding-window rate limit |
+| **Observability** | Langfuse, structured logging, SQLite audit DB |
+| **Infra** | Docker, GitHub Actions, python-dotenv centralized config |
+
+---
+
+## Quick Start
+
+### 1. Clone & install
 
 ```bash
-AUTH_ENABLED=1
-SMRA_API_KEYS=dev-key-1,dev-key-2   # comma-separated allow-list
-RATE_LIMIT_PER_MIN=30               # per API key or client IP
-UI_PASSWORD=your-shared-password    # optional Streamlit gate
+git clone https://github.com/ayushanand27/SMRA.git
+cd SMRA
+python -m pip install -r smra/requirements.txt
+python -m pip install -r smra/requirements-dev.txt   # pytest, ruff
 ```
 
-### Langfuse observability
+### 2. Configure environment
 
 ```bash
-LANGFUSE_ENABLED=1
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
+cp smra/.env.example smra/.env
+# Edit smra/.env — at minimum: GROQ_API_KEY, PINECONE_API_KEY, TAVILY_API_KEY
 ```
 
-Every `call_llm` invocation is traced when enabled; degrades to a no-op otherwise.
+### 3. One-command stack (Docker Compose — recommended)
 
-### Quality gate (run before every PR)
+```bash
+cp smra/.env.example smra/.env
+# Edit smra/.env — add GROQ_API_KEY, PINECONE_API_KEY, TAVILY_API_KEY
+
+docker compose up -d --build
+```
+
+This starts **Postgres** (host port `5434`), **Redis** (`6379`), and **FastAPI** (`8010`).  
+Compose overrides `DATABASE_URL` / `REDIS_URL` to use in-network hostnames.
+
+**First-time DB seed** (run on host while compose is up):
+
+```bash
+python smra/data/load_db.py
+python -m smra.scripts.migrate_sqlite_to_postgres --truncate
+python smra/scripts/ingest_pdfs.py
+```
+
+**Verify API:** http://localhost:8010/health
+
+**Streamlit** (separate terminal, on host):
+
+```bash
+python -m streamlit run smra/app.py --server.port 8501
+```
+
+<details>
+<summary>Manual Docker (without Compose)</summary>
+
+```bash
+docker run -d --name smra-pg \
+  -e POSTGRES_PASSWORD=smra -e POSTGRES_DB=smra \
+  -p 5434:5432 postgres:16-alpine
+
+docker run -d --name smra-redis -p 6379:6379 redis:7-alpine
+```
+
+Set in `smra/.env`:
+
+```env
+DATABASE_URL=postgresql+psycopg2://postgres:smra@127.0.0.1:5434/smra
+REDIS_URL=redis://localhost:6379
+```
+
+</details>
+
+### 4. Load historical prices (if not using compose seed step above)
+
+```bash
+# Seed SQLite from bundled Excel (if smra/data/smra.db not present)
+python smra/data/load_db.py
+
+# Copy SQLite → Postgres (includes currency backfill)
+python -m smra.scripts.migrate_sqlite_to_postgres --truncate
+```
+
+### 5. Ingest filing PDFs (RAG)
+
+Drop PDFs in `smra/pdfs/` (8 filings included in repo), then:
+
+```bash
+python smra/scripts/ingest_pdfs.py
+```
+
+Uses **384-dim** embeddings. Pinecone index must match (`PINECONE_DIMENSION=384`). Saves `smra/data/rag_local_store.pkl` as offline fallback.
+
+**OCR (Windows):** install Tesseract + Poppler, or set `TESSERACT_CMD` / `POPPLER_PATH` in `.env`.
+
+### 6. Run the app
+
+```bash
+# Streamlit UI (port 8501)
+python -m streamlit run smra/app.py --server.port 8501
+
+# FastAPI (port 8010) — starts ingestion scheduler + Redis rate limiting
+python -m uvicorn smra.api:app --port 8010
+```
+
+| Service | URL |
+|---------|-----|
+| Streamlit UI | http://localhost:8501 |
+| API health | http://localhost:8010/health |
+| Swagger docs | http://localhost:8010/docs |
+
+### 7. Quality gate (before PRs)
 
 ```bash
 ruff check smra tests
 pytest
-python -m smra.eval.run_eval
-# Optional (needs LLM keys): full pipeline + LLM-judge scoring
+python -m smra.eval.run_eval --threshold 0.7
+# Optional (needs LLM keys):
 python -m smra.eval.run_eval --judge --judge-threshold 0.6
 ```
 
-Quick start
------------
-1. Install dependencies (run from repository root):
+---
 
-```bash
-python -m pip install -r smra/requirements.txt
-```
+## Design Decisions
 
-2. Create a `.env` file in `smra/` (copy `.env.example` if present) and set your keys. Minimal vars:
+### Postgres over SQLite for market data
+Scheduled yfinance ingestion writes concurrently while the SQL agent reads. SQLite serializes writers and is a poor fit for a live pipeline. Postgres is the production path; SQLite remains an optional zero-setup fallback when `DATABASE_URL` is unset.
 
-```
-LLM_PROVIDER=groq        # or ollama, gemini
-GROQ_API_KEY=sk_...      # if using groq
-PINECONE_API_KEY=...     # for Pinecone (RAG)
-PINECONE_INDEX=smra-index
-TAVILY_API_KEY=...       # for web agent
-```
+### Explicit `currency` column instead of suffix inference
+US tickers (`AAPL`) and NSE tickers (`RELIANCE.NS`) store prices and market cap in **USD vs INR**. Inferring currency from `.NS` in prompts alone caused synthesis to label INR figures with `$`. A dedicated `currency` column—backfilled and set on every upsert—lets the SQL agent `SELECT` it and the synthesis step label `$` vs `₹` correctly. Cross-market marketcap rankings explicitly warn that **no FX conversion** is applied.
 
-3. Load the bundled Excel data into SQLite (defaults to `smra/data/stock_market_data.xlsx`):
+### Redis rate limiting with in-memory fallback
+A process-local sliding window breaks under multiple Uvicorn workers or horizontal scale. Redis provides a shared store with the same `check_rate_limit()` interface. If Redis is unreachable at startup or mid-request, the API **logs a warning and falls back to in-memory** rather than crashing—acceptable for local dev, not ideal for multi-instance prod (documented below).
 
-```bash
-python smra/data/load_db.py
-```
+---
 
-If you have your own Excel file, pass it explicitly:
+## Screenshots
 
-```bash
-python smra/data/load_db.py --excel path/to/your.xlsx --db smra/data/smra.db --set-columns
-```
+<!-- Add your own assets here -->
 
-4. Ingest PDFs for RAG (drop PDFs into `smra/pdfs/` and run):
+| Demo | File |
+|------|------|
+| Streamlit dark UI — SQL query | `docs/screenshots/sql-demo.png` |
+| RAG answer with PDF citation | `docs/screenshots/rag-citation.png` |
+| HYBRID — price + filing combined | `docs/screenshots/hybrid-demo.png` |
+| Langfuse trace view | `docs/screenshots/langfuse-trace.png` |
 
-```bash
-python smra/scripts/ingest_pdfs.py
-```
+> _Placeholder paths — replace with your recordings before publishing to LinkedIn/resume._
 
-This uses `sentence-transformers/all-MiniLM-L6-v2` (384 dims). If you previously created a Pinecone index with 1536 dims, delete it and recreate with `dimension=384`.
+---
 
-Note: If Pinecone is unreachable or you don't have an API key, the ingestion script will save a local fallback store at `smra/data/rag_local_store.pkl`. The RAG agent will automatically use this local store when Pinecone cannot be contacted.
+## Known Limitations & Roadmap
 
-OCR setup for scanned PDFs
---------------------------
-If your PDFs are scanned/image-only (no selectable text), the ingestion step will attempt OCR. The pipeline checks for text first, then falls back to OCR (pytesseract via pdf2image). Optional: if `pytreact` is installed, it is tried first; if the `ocrmypdf` CLI is installed, it may be used to generate a searchable PDF.
+| Limitation | Notes / planned work |
+|------------|---------------------|
+| **No cloud deployment yet** | Local Docker + manual run only; no K8s/Terraform/CI deploy pipeline |
+| **Redis fallback is single-process** | If Redis is down, rate limits are not shared across workers |
+| **Semantic cache is opt-in** | Enabling `SEMANTIC_CACHE_ENABLED` loads embedding model in-process (~400MB RAM); may return stale answers for paraphrased queries |
+| **Compose DB starts empty** | Run migrate + PDF ingest after first `docker compose up` |
+| **No FX conversion** | USD and INR coexist; cross-market rankings are explicitly flagged, not converted |
+| **RAG corpus is static PDFs** | Filings must be re-ingested manually; no live SEC EDGAR pull |
+| **Ingestion on FastAPI only** | Streamlit UI does not start the scheduler; run API for live bars |
+| **LLM provider dependency** | Groq/Tavily/Pinecone keys required for full demo; offline modes are partial |
 
-Windows prerequisites (recommended):
-- Install **Tesseract OCR** and add `tesseract.exe` to your PATH.
-- Install **Poppler** (for `pdftoppm`) and add its `bin` folder to PATH.
+**Roadmap:** managed deployment (Render/Fly), incremental Pinecone upsert (no full re-index), SEC/EDGAR auto-fetch, FX-normalized analytics view, Prometheus metrics export.
 
-If you don't want to modify PATH, you can set these in `.env` instead:
+---
 
-```
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-*** Begin merged README for repo root — comprehensive SMRA guide ***
-
-# Stock Market Research Assistant (SMRA)
-
-> AI-powered investment research assistant combining RAG, Text-to-SQL, and Live Web Search.
-
-This repository contains a small demo Streamlit application that demonstrates:
-- Natural language → SQL queries against a local SQLite stock prices DB
-- Retrieval-Augmented Generation (RAG) over uploaded financial PDFs (Pinecone or local HuggingFace embeddings)
-- Live web search via the Tavily API
-
-The application is intended as an educational/research prototype showing how to combine structured and unstructured financial data sources with LLMs.
-
-Contents
---------
-- Overview & architecture
-- Tech stack
-- End-to-end setup (install, environment, data load, ingestion, OCR)
-- Running the app and test scripts
-- Troubleshooting notes
-- Project structure and files
-- Data & references
-- License & disclaimer
-
-## Overview & architecture
-
-SMRA receives a user query, routes intent (SQL / RAG / WEB / HYBRID) and sends the request to one or more specialized agents. Each agent synthesizes an answer and the system returns a concise, cited response.
-
-Architecture (logical):
-
-```
-User Query
-	 ↓
-Intent Router (LLM)
-	 ↓
-┌─────────┬──────────┬─────────┐
-│ SQL     │ RAG      │ WEB     │
-│ Agent   │ Agent    │ Agent   │
-└────┬────┴────┬─────┴────┬────┘
-	  ↓         ↓          ↓
-  SQLite    Pinecone   Tavily API
-  (OHLCV)  (10-K PDFs) (Live news)
-	  ↓         ↓          ↓
-		  Response Synthesizer
-					 ↓
-			Streamlit Chat UI
-```
-
-Agents
-- SQL Agent: NL→SQL, executes against local SQLite (with fallback behavior for missing dates), synthesizes the answer.
-- RAG Agent: Searches vector store (Pinecone or local fallback), extracts text from OCR'd PDFs, and answers filing questions.
-- Web Agent: Calls Tavily for live news, returns sentiment and source citations.
-
-## Tech stack
-
-| Component     | Technology |
-|---------------|------------|
-| LLM           | Groq / Ollama / Gemini (configurable via `LLM_PROVIDER`) |
-| Vector store  | Pinecone (preferred) — local pickle fallback supported |
-| Embeddings    | sentence-transformers/all-MiniLM-L6-v2 (384-dim) |
-| Database      | SQLite (pandas helper loader) |
-| Web search    | Tavily API |
-| OCR           | PyMuPDF + pytesseract (pdf2image) |
-| UI            | Streamlit |
-| Framework     | LangChain (for orchestration) |
-
-## End-to-end setup (from scratch)
-
-1) Install dependencies (run from repo root):
-
-```bash
-python -m pip install -r smra/requirements.txt
-```
-
-2) Create environment file for secrets: create `smra/.env` (copy `smra/.env.example` if present).
-
-Example `.env`
-----------------
-Create `smra/.env` from the example below and fill in your API keys and paths. Do NOT commit real secrets.
-
-```env
-# LLM provider and keys
-LLM_PROVIDER=groq            # groq | ollama | gemini
-GROQ_API_KEY=gsk_your_groq_key_here
-GROQ_MODEL=mixtral-8x7b-32768
-
-# Pinecone (RAG)
-PINECONE_API_KEY=your_pinecone_api_key_here
-PINECONE_ENV=us-west1-gcp
-PINECONE_INDEX=smra-index
-PINECONE_DIMENSION=384        # must match embedding model dims
-PINECONE_DISABLED=0           # set to 1 to force local rag_local_store.pkl
-
-# Embeddings model
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-
-# Tavily (web search)
-TAVILY_API_KEY=tvly_your_key_here
-
-# OCR (Windows examples)
-TESSERACT_CMD=C:\\Program Files\\Tesseract-OCR\\tesseract.exe
-POPPLER_PATH=C:\\path\\to\\poppler\\bin
-OCR_MAX_PAGES=5               # 0 = all pages, >0 limit for tests
-OCR_FORCE=0                   # 1 = force OCR (skip text-first extraction)
-
-# Database
-DATABASE_PATH=smra/data/smra.db
-
-# Misc
-LOG_LEVEL=INFO
-```
-
-Notes:
-- `PINECONE_DIMENSION` must match the dimension of `EMBEDDING_MODEL` (the project uses 384 for `all-MiniLM-L6-v2`).
-- Set `PINECONE_DISABLED=1` when you want to run offline and use the local RAG store `smra/data/rag_local_store.pkl`.
-- On Windows, either add Tesseract and Poppler to PATH or set `TESSERACT_CMD` and `POPPLER_PATH`.
-
-Minimal environment variables (examples):
-
-```env
-LLM_PROVIDER=groq            # or ollama, gemini
-GROQ_API_KEY=gsk_xxxxxxxxxxxx
-GROQ_MODEL=mixtral-8x7b-32768
-PINECONE_API_KEY=xxxxxxxxxxxx
-PINECONE_INDEX=smra-index
-TAVILY_API_KEY=tvly-xxxxxxxxxxxx
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-POPPLER_PATH=C:\path\to\poppler\bin
-PINECONE_DISABLED=0          # set to 1 to force local RAG store
-OCR_MAX_PAGES=5              # shorten for tests
-OCR_FORCE=0                  # 1 to force OCR path
-```
-
-Notes:
-- If you do not have Pinecone credentials or want to run offline, set `PINECONE_DISABLED=1`. The ingestion script will instead save `smra/data/rag_local_store.pkl` which the RAG agent can use.
-- On Windows, either add Tesseract and Poppler to PATH or set `TESSERACT_CMD` and `POPPLER_PATH` in `.env`.
-
-3) Load the bundled Excel stock data into SQLite (default path `smra/data/stock_market_data.xlsx`):
-
-```bash
-python smra/data/load_db.py
-```
-
-If you have a custom Excel file or want a specific DB path:
-
-```bash
-python smra/data/load_db.py --excel path/to/your.xlsx --db smra/data/smra.db --set-columns
-```
-
-4) Ingest financial PDFs for RAG (one-time):
-
-- Drop annual reports / 10-K PDFs into `smra/pdfs/`.
-- Run ingestion (this will OCR pages as needed, chunk text, embed using the configured embedding model, and either upload to Pinecone or save a local fallback store):
-
-```bash
-python smra/scripts/ingest_pdfs.py
-python smra/scripts/upload_to_pinecone.py   # optional if you use Pinecone
-```
-
-Important: the project uses `sentence-transformers/all-MiniLM-L6-v2` (384 dims). If you previously created a Pinecone index with different dimensions (e.g., 1536), delete and recreate it with `dimension=384`.
-
-5) OCR prerequisites (if PDFs are scanned/image-only):
-
-- Install Tesseract and add it to PATH or set `TESSERACT_CMD`.
-- Install Poppler (for `pdftoppm`) and add its `bin` folder to PATH or set `POPPLER_PATH`.
-
-Optional environment flags for quicker testing:
-
-- `OCR_MAX_PAGES=5` — limits pages processed for speed.
-- `OCR_FORCE=1` — skip text-first path and force OCR (useful for known scanned PDFs).
-
-6) Run the Streamlit app:
-
-```bash
-cd smra
-streamlit run app.py
-# or from repo root: streamlit run smra/app.py
-```
-
-## Helpful test scripts (headless checks)
-
-Run small helper scripts (from repo root):
-
-```bash
-python smra/scripts/test_sql_agent.py
-python smra/scripts/test_router.py
-python smra/scripts/test_web_agent.py
-```
-
-These exercise individual components without launching the UI.
-
-## Troubleshooting (common issues)
-
-- Groq/GROQ_API_KEY errors: ensure `smra/.env` contains the correct key and restart Streamlit so `python-dotenv` reloads it.
-- "no such table: stock_prices": re-run the loader:
-
-```bash
-python smra/data/load_db.py
-```
-
-- Pinecone dimension mismatch: recreate your index with `dimension=384` when using `all-MiniLM-L6-v2`.
-- Windows quoting issues: use the provided scripts in `smra/scripts/` where possible instead of `python -c '...'` one-liners.
-- If Pinecone is slow/unreachable, set `PINECONE_DISABLED=1` to force using the local `smra/data/rag_local_store.pkl` store.
-
-Behavior notes
-- SQL agent: when a requested date is missing, the agent attempts a nearest-date fallback and will explain the fallback in its response.
-
-## Project structure (key files)
+## Project Structure
 
 ```
 smra/
-├── app.py                  # Streamlit chat UI
-├── router.py               # Intent classification (routes to SQL/RAG/WEB/HYBRID)
-├── agents/
-│   ├── sql_agent.py        # NL → SQL → answer
-│   ├── rag_agent.py        # PDF retrieval + answer
-│   └── web_agent.py        # Tavily search + sentiment
-├── utils/
-│   ├── llm.py              # unified LLM wrapper (Groq / Ollama / Gemini)
-│   ├── charts.py           # Plotly chart helpers
-│   └── schemas.py          # response schemas
-├── data/
-│   ├── load_db.py          # Excel → SQLite loader
-│   ├── smra.db             # optional bundled DB
-│   └── rag_local_store.pkl # local RAG fallback
-├── scripts/
-│   ├── ingest_pdfs.py      # OCR + chunk + embed PDFs
-│   ├── upload_to_pinecone.py
-│   └── test_*.py           # small test helpers
-├── pdfs/                   # place PDFs for ingestion
-└── .env                    # API keys (never commit)
+├── app.py / ui.py          # Streamlit chat UI
+├── api.py                  # FastAPI (/query, /health, /audit)
+├── router.py               # Intent classification
+├── orchestrator.py         # HYBRID synthesis
+├── agents/                 # sql_agent, rag_agent, web_agent
+├── ingestion/              # scheduler, upsert (Postgres)
+├── data_sources/           # yfinance adapter
+├── config/tickers.py       # 50 US + NSE symbols
+├── db/                     # Postgres schema + migrations
+├── scripts/                # ingest_pdfs, migrate_sqlite_to_postgres, load_test.py
+├── eval/                   # golden dataset, LLM judge
+├── utils/                  # db, security, guardrails, observability, currency
+└── pdfs/                   # 8 company filings
+tests/                      # pytest suite (75 tests)
+.github/workflows/ci.yml    # lint + test + offline evals
+docker-compose.yml          # Postgres + Redis + FastAPI
 ```
 
-## Data
+---
 
-Structured (SQL): daily OHLCV data (7,560 rows) for ~30 symbols (2025 sample) used for NL→SQL examples.
+## API Reference (FastAPI)
 
-Unstructured (RAG): example Apple 10-K and NVIDIA Annual Report OCR texts chunked into ~250 vectors at 384 dimensions.
+```bash
+# Health
+curl http://localhost:8010/health
 
-## Industry references
+# Query (auth optional when AUTH_ENABLED=0)
+curl -X POST http://localhost:8010/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What was Apple total net sales in the 10-K?"}'
 
-- FinRobot — https://github.com/AI4Finance-Foundation/FinRobot
-- FinGPT — https://github.com/AI4Finance-Foundation/FinGPT
-- FinStat2SQL (research)
+# Recent audit entries
+curl http://localhost:8010/audit?limit=10
+```
 
-## License
+Enable auth: `AUTH_ENABLED=1` + `SMRA_API_KEYS=key1,key2` → pass `-H "X-API-Key: key1"`.
 
-MIT
+---
 
-## Disclaimer
+## References
 
-This tool is for educational and research purposes only and is not financial advice. Consult a licensed financial advisor before making investment decisions.
+- [OWASP LLM Top 10](https://genai.owasp.org/llm-top-10/)
+- [FinRobot](https://github.com/AI4Finance-Foundation/FinRobot) · [FinGPT](https://github.com/AI4Finance-Foundation/FinGPT)
 
+---
 
+## License & Disclaimer
+
+MIT License. **Not financial advice.** For education and research only—consult a licensed advisor before making investment decisions.

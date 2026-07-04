@@ -438,4 +438,8 @@ Answer directly with the specific figures."""
 
     except Exception as e:
         logger.exception("RAG error: %s", e)
-        return error_response(f"RAG error: {str(e)}", error_type="exec", fallback=True)
+        try:
+            from smra.utils.friendly_errors import friendly_rag_message
+        except (ModuleNotFoundError, ImportError):
+            from utils.friendly_errors import friendly_rag_message
+        return error_response(friendly_rag_message(e), error_type="exec", fallback=True)

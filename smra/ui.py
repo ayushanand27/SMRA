@@ -194,6 +194,13 @@ code, pre, .stCode { font-family: 'JetBrains Mono', monospace !important; }
 """
 
 
+def safe_markdown(text: str) -> None:
+    """Render model text without Streamlit treating $...$ as LaTeX math."""
+    if not text:
+        return
+    st.markdown(text.replace("$", "\\$"))
+
+
 def inject_theme() -> None:
     st.markdown(PREMIUM_CSS, unsafe_allow_html=True)
 

@@ -18,16 +18,22 @@ except (ModuleNotFoundError, ImportError):
     from utils.config import get_settings
 
 # Known prompt-injection / jailbreak signatures (LLM01).
+# Patterns are intentionally typo-tolerant: `instr\w*` matches "instructions"
+# and common misspellings (e.g. "instrcutions"), and "your"/"ur" are both
+# accepted, since attackers rarely spell perfectly.
+_YOUR = r"(?:your\s+|ur\s+)?"
 _INJECTION_PATTERNS = [
-    r"ignore\s+(?:all\s+)?(?:your\s+)?(?:previous|prior|above)\s+instructions",
-    r"disregard\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|prompts)",
+    rf"ignore\s+(?:all\s+)?{_YOUR}(?:previous|prior|above|prev)\s+instr\w*",
+    rf"disregard\s+(?:all\s+)?{_YOUR}(?:previous|prior|above)\s+(?:instr\w*|prompts?)",
+    r"ignore\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above)\s+(?:instr\w*|prompts?|context|rules?)",
     r"forget\s+(?:everything|all)\s+(?:you|above)",
     r"you\s+are\s+now\s+(?:a|an|in)\s+",
     r"\bDAN\b\s+mode",
     r"developer\s+mode",
     r"system\s+prompt\s*[:=]",
-    r"reveal\s+(?:your\s+)?(?:system\s+)?prompt",
-    r"print\s+(?:your\s+)?(?:system\s+)?(?:prompt|instructions)",
+    rf"reveal\s+{_YOUR}(?:system\s+)?(?:prompt|instr\w*)",
+    rf"print\s+{_YOUR}(?:system\s+)?(?:prompt|instr\w*)",
+    rf"show\s+(?:me\s+)?{_YOUR}(?:system\s+)?(?:prompt|instr\w*)",
     r"act\s+as\s+(?:if\s+you\s+are\s+)?(?:an?\s+)?(?:unrestricted|jailbroken)",
     r"do\s+anything\s+now",
 ]

@@ -9,6 +9,8 @@ from smra.utils.config import get_settings
 
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch):
+    # Force in-memory limiter unless a test explicitly enables Redis.
+    monkeypatch.setenv("REDIS_URL", "memory")
     security.reset_rate_limits()
     # Reset settings cache-free (get_settings builds fresh each call).
     yield
@@ -66,6 +68,78 @@ class TestRateLimit:
         assert security.check_rate_limit("a")[0] is True
         assert security.check_rate_limit("b")[0] is True
         assert security.check_rate_limit("a")[0] is False
+
+
+class TestRateLimitRedis:
+    class _FakeRedis:
+        """Minimal sorted-set stub for Redis sliding-window tests."""
+
+        def __init__(self):
+            self._zsets: dict[str, dict[str, float]] = {}
+
+        def ping(self):
+            return True
+
+        def zremrangebyscore(self, key, min_score, max_score):
+            zset = self._zsets.setdefault(key, {})
+            self._zsets[key] = {
+                member: score
+                for member, score in zset.items()
+                if not (min_score <= score <= max_score)
+            }
+
+        def zcard(self, key):
+            return len(self._zsets.get(key, {}))
+
+        def zrange(self, key, start, end, withscores=False):
+            items = sorted(self._zsets.get(key, {}).items(), key=lambda kv: kv[1])
+            if end == -1:
+                end = len(items) - 1
+            sliced = items[start : end + 1]
+            if withscores:
+                return sliced
+            return [member for member, _ in sliced]
+
+        def zadd(self, key, mapping):
+            zset = self._zsets.setdefault(key, {})
+            zset.update({str(member): float(score) for member, score in mapping.items()})
+
+        def expire(self, key, ttl):
+            return True
+
+        def scan_iter(self, match):
+            prefix = match.rstrip("*")
+            for key in list(self._zsets.keys()):
+                if key.startswith(prefix):
+                    yield key
+
+        def delete(self, key):
+            self._zsets.pop(key, None)
+
+    def test_redis_backend_enforces_limit(self, monkeypatch):
+        fake = self._FakeRedis()
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
+        monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+        monkeypatch.setenv("RATE_LIMIT_PER_MIN", "2")
+        monkeypatch.setattr(security, "_get_redis_client", lambda: fake)
+
+        assert security.check_rate_limit("redis-id")[0] is True
+        assert security.check_rate_limit("redis-id")[0] is True
+        allowed, retry_after = security.check_rate_limit("redis-id")
+        assert allowed is False
+        assert retry_after >= 1
+
+    def test_redis_unreachable_falls_back_to_memory(self, monkeypatch, caplog):
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:59999")
+        monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+        monkeypatch.setenv("RATE_LIMIT_PER_MIN", "1")
+        security.reset_rate_limits()
+
+        with caplog.at_level("WARNING"):
+            assert security.check_rate_limit("fallback-id")[0] is True
+            assert security.check_rate_limit("fallback-id")[0] is False
+
+        assert any("in-memory fallback" in rec.message.lower() for rec in caplog.records)
 
 
 class TestSettingsParsing:
