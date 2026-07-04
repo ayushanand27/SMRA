@@ -239,6 +239,27 @@ def run_rag_agent(user_question: str) -> dict:
     """
     logger = logging.getLogger("smra.rag")
     try:
+        from smra.utils.config import get_settings, is_mock_mode
+    except (ModuleNotFoundError, ImportError):
+        from utils.config import get_settings, is_mock_mode
+
+    if is_mock_mode():
+        logger.warning("MOCK_MODE: skipping Pinecone/embeddings — returning stub RAG response")
+        return success_response(
+            answer=(
+                "[MOCK] Apple total net sales were approximately 383,285 million USD "
+                "per the annual filing."
+            ),
+            data=[],
+            meta={
+                "sources": ["apple.pdf"],
+                "scores": [0.92],
+                "grounded": True,
+                "faithfulness_score": 1.0,
+            },
+        )
+
+    try:
         top_k = _env_int("RAG_TOP_K", 4)
         embeddings = _get_embeddings()
 

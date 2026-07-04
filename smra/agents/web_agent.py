@@ -23,12 +23,26 @@ def _is_cached(key: str) -> bool:
 
 def run_web_agent(user_question: str) -> dict:
     try:
+        from smra.utils.config import is_mock_mode
         from smra.utils.llm import call_llm
         from smra.utils.schemas import error_response, success_response
     except (ModuleNotFoundError, ImportError):
+        from utils.config import is_mock_mode
         from utils.schemas import error_response, success_response
 
         from utils.llm import call_llm
+
+    if is_mock_mode():
+        logger.warning("MOCK_MODE: skipping Tavily — returning stub web response")
+        return success_response(
+            answer="[MOCK] Recent headlines suggest neutral sentiment for the queried topic.",
+            data=[],
+            meta={
+                "sources": ["https://example.com/mock-news"],
+                "sentiment": {"label": "Neutral", "score": 0.5},
+                "symbols": ["TSLA"],
+            },
+        )
 
     key = _cache_key(user_question)
     if _is_cached(key):

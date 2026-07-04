@@ -124,9 +124,15 @@ def _to_urls(result: dict) -> list:
 
 @app.get("/health")
 def health() -> dict:
+    try:
+        from smra.utils.config import is_mock_mode
+    except (ModuleNotFoundError, ImportError):
+        from utils.config import is_mock_mode
+
     return {
         "status": "ok",
         "provider": settings.llm_provider,
+        "mock_mode": is_mock_mode(),
         "ingestion_enabled": settings.ingestion_enabled,
         "postgres": bool(settings.database_url),
     }

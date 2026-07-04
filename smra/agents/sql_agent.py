@@ -47,6 +47,7 @@ Rules:
 - For "top N by marketcap" or cross-market rankings, include currency in SELECT; prefer filtering
   WHERE currency = 'USD' or WHERE currency = 'INR' when the user asks about one market only
 - Never use semicolons at the end
+- Return exactly ONE SELECT statement — never two queries separated by blank lines or semicolons
 - Never use DROP, DELETE, INSERT, UPDATE, ALTER, ATTACH, or PRAGMA
 """
 
@@ -77,6 +78,29 @@ def _is_sql_safe(sql: str) -> bool:
     if _BANNED_SQL.search(sql):
         return False
     return bool(re.match(r"^\s*SELECT\b", sql, re.I | re.DOTALL))
+
+
+def _normalize_sql(raw: str) -> str:
+    """Extract a single safe SELECT from LLM output (handles multi-statement replies)."""
+    text = (raw or "").strip().replace("```sql", "").replace("```", "").strip()
+    if not text:
+        return ""
+
+    for chunk in re.split(r";\s*|\n\s*\n+", text):
+        candidate = chunk.strip().rstrip("; ")
+        if _is_sql_safe(candidate):
+            return candidate
+
+    match = re.search(r"(SELECT\b.+)", text, re.I | re.DOTALL)
+    if match:
+        candidate = match.group(1).strip().rstrip("; ")
+        first_line_break = re.split(r"\n\s*\n+", candidate, maxsplit=1)[0].strip()
+        if _is_sql_safe(first_line_break):
+            return first_line_break
+        if _is_sql_safe(candidate):
+            return candidate
+
+    return text.rstrip("; ")
 
 
 def _confidence_from_rows(n: int) -> str:
@@ -133,7 +157,7 @@ def run_sql_agent(user_question: str) -> dict:
         err["sql"] = sql_query
         return err
 
-    sql_query = sql_query.strip().replace("```sql", "").replace("```", "").strip().rstrip("; ")
+    sql_query = _normalize_sql(sql_query)
     logger.info("Generated SQL: %s", sql_query)
 
     if _empty_llm_output(sql_query):
@@ -177,11 +201,11 @@ def run_sql_agent(user_question: str) -> dict:
             repair_prompt = (
                 f"The following SQL failed with error: {exc}\n\n"
                 f"Original SQL:\n{sql_query}\n\n"
-                "Please provide a corrected SELECT query using the same rules. Return ONLY the SQL."
+                "Return exactly ONE corrected SELECT statement using the same rules. "
+                "Do not include multiple queries, explanations, or markdown."
             )
             try:
-                repaired = call_llm(SQL_SYSTEM, repair_prompt)
-                repaired = repaired.strip().replace("```sql", "").replace("```", "").strip().rstrip("; ")
+                repaired = _normalize_sql(call_llm(SQL_SYSTEM, repair_prompt))
                 if not _is_sql_safe(repaired):
                     logger.warning("Repaired SQL is unsafe, aborting retry: %s", repaired)
                     break

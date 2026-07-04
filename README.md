@@ -75,7 +75,7 @@ flowchart TB
 - Faithfulness helper validates numeric claims against retrieved context
 
 ### Quality & delivery
-- **75** automated unit tests (pytest) + offline eval suite
+- **86** automated unit tests (pytest) + offline eval suite
 - **GitHub Actions CI:** ruff lint, pytest, golden evals
 - **Docker Compose** one-command Postgres + Redis + FastAPI stack
 - **Dockerfile** with Tesseract + Poppler for OCR-capable ingestion
@@ -227,6 +227,9 @@ US tickers (`AAPL`) and NSE tickers (`RELIANCE.NS`) store prices and market cap 
 ### Redis rate limiting with in-memory fallback
 A process-local sliding window breaks under multiple Uvicorn workers or horizontal scale. Redis provides a shared store with the same `check_rate_limit()` interface. If Redis is unreachable at startup or mid-request, the API **logs a warning and falls back to in-memory** rather than crashing—acceptable for local dev, not ideal for multi-instance prod (documented below).
 
+### Mock LLM mode for infra load testing (`MOCK_MODE=1`)
+Load testing against live Groq/Ollama/Gemini burns **quota**, hits **429 rate limits**, and produces **noisy latency** dominated by third-party APIs—not your routing, Postgres, Redis, or caching stack. `MOCK_MODE=1` (opt-in, off by default) routes all `call_llm()` calls through fast deterministic stubs and skips Tavily/Pinecone in RAG/Web agents. Use it with `load_test.py --mode infra` (high concurrency) to measure **infra capacity**; run `--mode smoke` separately with mock off and low concurrency for **real end-to-end latency**. `/health` exposes `mock_mode: true/false` so the two modes are never confused.
+
 ---
 
 ## Screenshots
@@ -256,6 +259,9 @@ A process-local sliding window breaks under multiple Uvicorn workers or horizont
 | **RAG corpus is static PDFs** | Filings must be re-ingested manually; no live SEC EDGAR pull |
 | **Ingestion on FastAPI only** | Streamlit UI does not start the scheduler; run API for live bars |
 | **LLM provider dependency** | Groq/Tavily/Pinecone keys required for full demo; offline modes are partial |
+| **Mock vs real load tests** | `MOCK_MODE=1` + `load_test.py --mode infra` measures routing/DB/cache/rate limits **without** real LLM latency; run `--mode smoke` with mock off at low concurrency for true end-to-end timing |
+| **SQL repair multi-statement edge case** | Repair retries occasionally returned two `SELECT`s separated by blank lines (Postgres rejected as syntax error); fixed via `_normalize_sql()` extracting a single statement—found during load testing |
+| **Multi-hop LLM latency** | SQL/HYBRID routes can chain **3–4 sequential LLM calls** (router → SQL gen → synthesis, etc.); with `llama-3.1-8b-instant` expect **~20–30s** end-to-end—characteristic of the pipeline, not a bug; future work: parallelize independent hops or use a faster/larger model where quota allows |
 
 **Roadmap:** managed deployment (Render/Fly), incremental Pinecone upsert (no full re-index), SEC/EDGAR auto-fetch, FX-normalized analytics view, Prometheus metrics export.
 
@@ -278,7 +284,7 @@ smra/
 ├── eval/                   # golden dataset, LLM judge
 ├── utils/                  # db, security, guardrails, observability, currency
 └── pdfs/                   # 8 company filings
-tests/                      # pytest suite (75 tests)
+tests/                      # pytest suite (86 tests)
 .github/workflows/ci.yml    # lint + test + offline evals
 docker-compose.yml          # Postgres + Redis + FastAPI
 ```

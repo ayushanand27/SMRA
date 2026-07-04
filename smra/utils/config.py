@@ -41,6 +41,7 @@ def _env_float(name: str, default: float) -> float:
 class Settings:
     # LLM
     llm_provider: str = field(default_factory=lambda: (os.getenv("LLM_PROVIDER") or "groq").strip().lower())
+    mock_mode: bool = field(default_factory=lambda: _env_bool("MOCK_MODE", False))
     groq_model: str = field(default_factory=lambda: os.getenv("GROQ_MODEL", "mixtral-8x7b-32768"))
     ollama_url: str = field(default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.1"))
@@ -110,7 +111,13 @@ class Settings:
 
     @property
     def supported_providers(self) -> List[str]:
-        return ["groq", "ollama", "gemini"]
+        return ["groq", "ollama", "gemini", "mock"]
+
+
+def is_mock_mode() -> bool:
+    """True when MOCK_MODE=1 or LLM_PROVIDER=mock (opt-in load/CI testing only)."""
+    settings = get_settings()
+    return settings.mock_mode or settings.llm_provider == "mock"
 
 
 def get_settings() -> Settings:

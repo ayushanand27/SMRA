@@ -1,18 +1,125 @@
+import hashlib
+import json
 import logging
 import os
 import re
 import time
 
 try:
-    from smra.utils.config import get_settings
+    from smra.utils.config import get_settings, is_mock_mode
     from smra.utils.langfuse_client import observe_generation
     from smra.utils.observability import track_llm_call
 except (ModuleNotFoundError, ImportError):
-    from utils.config import get_settings
+    from utils.config import get_settings, is_mock_mode
     from utils.langfuse_client import observe_generation
     from utils.observability import track_llm_call
 
 logger = logging.getLogger("smra.llm")
+
+_mock_mode_logged = False
+
+
+def _log_mock_mode_once() -> None:
+    global _mock_mode_logged
+    if _mock_mode_logged:
+        return
+    _mock_mode_logged = True
+    logger.warning(
+        "*** MOCK_MODE active — LLM responses are synthetic (no Groq/Ollama/Gemini calls) ***"
+    )
+
+
+def _mock_route_json(user_prompt: str) -> str:
+    q = user_prompt.lower()
+    if any(w in q for w in ("news", "latest", "today", "recent", "forecast")):
+        return '{"route": ["WEB"]}'
+    rag = any(w in q for w in ("revenue", "sales", "filing", "10-k", "annual", "earnings", "report"))
+    sql = any(
+        w in q
+        for w in ("price", "close", "closing", "volume", "marketcap", "market cap", "stock", "aapl")
+    )
+    if rag and sql:
+        return '{"route": ["SQL", "RAG"]}'
+    if rag:
+        return '{"route": ["RAG"]}'
+    return '{"route": ["SQL"]}'
+
+
+def _mock_sql(user_prompt: str) -> str:
+    q = user_prompt.lower()
+    if "marketcap" in q or "market cap" in q or "top" in q and "stock" in q:
+        return (
+            "SELECT symbol, company, marketcap, currency FROM stock_prices "
+            "WHERE currency = 'USD' ORDER BY marketcap DESC LIMIT 5"
+        )
+    if "reliance" in q:
+        return (
+            "SELECT symbol, date, close, currency FROM stock_prices "
+            "WHERE symbol = 'RELIANCE.NS' ORDER BY date DESC LIMIT 5"
+        )
+    if "nvidia" in q or "nvda" in q:
+        return (
+            "SELECT symbol, date, close, currency FROM stock_prices "
+            "WHERE symbol = 'NVDA' ORDER BY date DESC LIMIT 5"
+        )
+    if "2025-01-02" in user_prompt:
+        return (
+            "SELECT symbol, date, close, currency FROM stock_prices "
+            "WHERE symbol = 'AAPL' AND date = '2025-01-02' ORDER BY date"
+        )
+    return (
+        "SELECT symbol, date, close, currency FROM stock_prices "
+        "WHERE symbol = 'AAPL' ORDER BY date DESC LIMIT 10"
+    )
+
+
+def _call_mock(system_prompt: str, user_prompt: str, model: str, max_tokens: int, temperature: float) -> str:
+    """Fast deterministic stub for infra load tests and CI (MOCK_MODE=1 only)."""
+    _log_mock_mode_once()
+    sys_l = (system_prompt or "").lower()
+    user_l = (user_prompt or "").lower()
+
+    with track_llm_call("mock", model) as rec:
+        rec.input_tokens = max(1, len(user_prompt) // 4)
+        rec.output_tokens = 64
+        rec.finish_reason = "stop"
+
+        if "query router" in sys_l or user_prompt.strip().lower().startswith("query:"):
+            return _mock_route_json(user_l)
+
+        if "rewrite the user's query" in user_l or "rewritten search phrase" in user_l:
+            if "apple" in user_l or "aapl" in user_l:
+                return "Apple Inc total net sales annual report 10-K"
+            if "nvidia" in user_l:
+                return "NVIDIA revenue annual filing 10-K"
+            return user_prompt.split("User query:")[-1].split("\n")[0].strip() or "financial filing search"
+
+        if "expert sql" in sys_l or "sql query writer" in sys_l or "question:" in user_l:
+            return _mock_sql(user_prompt)
+
+        if "financial news analyst" in sys_l and "json" in sys_l:
+            return json.dumps(
+                {
+                    "answer": "[MOCK] Recent headlines indicate mixed sentiment for the queried topic.",
+                    "sentiment": {"label": "Neutral", "score": 0.5},
+                    "symbols": ["AAPL"],
+                }
+            )
+
+        if "hybrid" in sys_l or ("sql" in user_l and "rag" in user_l):
+            return (
+                "[MOCK] Combined view: AAPL closed near $178 USD; filing revenue figures "
+                "are available in the annual report context."
+            )
+
+        if "financial analyst" in sys_l or "ocr-extracted" in sys_l or "filing" in sys_l:
+            return (
+                "[MOCK] Based on the retrieved filing excerpt, total net sales were "
+                "approximately 383,285 million USD."
+            )
+
+        digest = hashlib.sha256((system_prompt + user_prompt).encode()).hexdigest()[:8]
+        return f"[MOCK] Deterministic stub response ({digest})."
 
 
 def _call_groq(system_prompt: str, user_prompt: str, model: str, max_tokens: int, temperature: float) -> str:
@@ -111,23 +218,35 @@ def _call_gemini(system_prompt: str, user_prompt: str, model: str, max_tokens: i
 
 
 def call_llm(system_prompt: str, user_prompt: str, max_tokens: int | None = None, temperature: float | None = None) -> str:
-    """Unified LLM entry point selected via LLM_PROVIDER (groq | ollama | gemini)."""
+    """Unified LLM entry point selected via LLM_PROVIDER (groq | ollama | gemini | mock).
+
+    When MOCK_MODE=1 or LLM_PROVIDER=mock, returns fast deterministic stubs (no external LLM APIs).
+    """
     settings = get_settings()
-    provider = settings.llm_provider
     max_tokens = settings.llm_max_tokens if max_tokens is None else max_tokens
     temperature = settings.llm_temperature if temperature is None else temperature
 
-    if provider == "groq":
+    if is_mock_mode():
+        model = "mock-stub"
+        provider = "mock"
+        fn = _call_mock
+    elif settings.llm_provider == "groq":
         model = settings.groq_model
+        provider = "groq"
         fn = _call_groq
-    elif provider == "ollama":
+    elif settings.llm_provider == "ollama":
         model = settings.ollama_model
+        provider = "ollama"
         fn = _call_ollama
-    elif provider == "gemini":
+    elif settings.llm_provider == "gemini":
         model = settings.gemini_model
+        provider = "gemini"
         fn = _call_gemini
     else:
-        raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'. Use groq, ollama, or gemini.")
+        raise ValueError(
+            f"Unsupported LLM_PROVIDER '{settings.llm_provider}'. "
+            "Use groq, ollama, gemini, or mock (with MOCK_MODE=1)."
+        )
 
     with observe_generation(name="call_llm", model=model, provider=provider, prompt=user_prompt) as gen:
         output = fn(system_prompt, user_prompt, model, max_tokens, temperature)
