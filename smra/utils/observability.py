@@ -21,8 +21,10 @@ _query_id: contextvars.ContextVar[str] = contextvars.ContextVar("smra_query_id",
 # Approx USD per 1M tokens (input, output). Best-effort estimates; override via env if needed.
 _PRICING: dict[str, tuple[float, float]] = {
     "mixtral-8x7b-32768": (0.24, 0.24),
-    "llama-3.1-8b-instant": (0.05, 0.08),
-    "llama-3.3-70b-versatile": (0.59, 0.79),
+    "llama-3.1-8b-instant": (0.05, 0.08),  # deprecated; shutdown 2026-08-16
+    "llama-3.3-70b-versatile": (0.59, 0.79),  # deprecated; shutdown 2026-08-16
+    "openai/gpt-oss-20b": (0.05, 0.08),
+    "openai/gpt-oss-120b": (0.59, 0.79),
     "gemini-1.5-flash": (0.075, 0.30),
     "gemini-1.5-pro": (1.25, 5.00),
 }

@@ -126,29 +126,50 @@ def _call_groq(system_prompt: str, user_prompt: str, model: str, max_tokens: int
     from groq import Groq
 
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    settings = get_settings()
 
     max_retries = 5
     wait_seconds = 3
     last_exc = None
+    is_gpt_oss = "gpt-oss" in (model or "").lower()
 
     for attempt in range(1, max_retries + 1):
         try:
             with track_llm_call("groq", model) as rec:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
+                kwargs = {
+                    "model": model,
+                    "messages": [
                         {"role": "system", "content": system_prompt or "You are a helpful assistant."},
                         {"role": "user", "content": user_prompt},
                     ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                # Reasoning models burn completion budget on chain-of-thought unless effort is low.
+                # Older groq SDKs reject reasoning_* kwargs — pass via extra_body.
+                if is_gpt_oss:
+                    effort = settings.groq_reasoning_effort
+                    if effort in {"low", "medium", "high"}:
+                        kwargs["extra_body"] = {
+                            "reasoning_effort": effort,
+                            "include_reasoning": False,
+                        }
+
+                response = client.chat.completions.create(**kwargs)
                 usage = getattr(response, "usage", None)
                 if usage is not None:
                     rec.input_tokens = getattr(usage, "prompt_tokens", 0) or 0
                     rec.output_tokens = getattr(usage, "completion_tokens", 0) or 0
-                rec.finish_reason = getattr(response.choices[0], "finish_reason", "") or ""
-                return response.choices[0].message.content
+                choice = response.choices[0]
+                rec.finish_reason = getattr(choice, "finish_reason", "") or ""
+                # openai/gpt-oss-* may spend completion budget on `reasoning` and leave
+                # content empty when max_tokens is too low (finish_reason=length).
+                content = getattr(choice.message, "content", None) or ""
+                if not str(content).strip() and rec.finish_reason == "length" and attempt < max_retries:
+                    raise RuntimeError(
+                        "empty_content_after_reasoning_budget; retry with higher max_tokens"
+                    )
+                return str(content)
 
         except Exception as exc:
             last_exc = exc
@@ -162,8 +183,16 @@ def _call_groq(system_prompt: str, user_prompt: str, model: str, max_tokens: int
             ):
                 break
 
+            if "empty_content_after_reasoning_budget" in err_str:
+                max_tokens = min(max(max_tokens * 2, 2500), 8000)
+                logger.info("Raising max_tokens to %s for gpt-oss reasoning headroom", max_tokens)
+                wait = 0.5
+
             match = re.search(r"try again in (\d+(?:\.\d+)?)s", err_str)
-            wait = float(match.group(1)) + 1 if match else wait_seconds
+            if "empty_content_after_reasoning_budget" not in err_str:
+                wait = float(match.group(1)) + 1 if match else wait_seconds
+            else:
+                wait = 0.5
 
             if attempt < max_retries:
                 logger.info("Waiting %ss before retry...", wait)

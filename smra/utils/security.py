@@ -62,11 +62,12 @@ def _get_redis_client():
     try:
         import redis
 
+        # 3s timeouts: Upstash / remote Redis TLS is slower than local Docker Redis
         client = redis.from_url(
             settings.redis_url,
             decode_responses=True,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
+            socket_connect_timeout=3.0,
+            socket_timeout=3.0,
         )
         client.ping()
         _redis_client = client

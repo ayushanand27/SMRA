@@ -42,7 +42,11 @@ class Settings:
     # LLM
     llm_provider: str = field(default_factory=lambda: (os.getenv("LLM_PROVIDER") or "groq").strip().lower())
     mock_mode: bool = field(default_factory=lambda: _env_bool("MOCK_MODE", False))
-    groq_model: str = field(default_factory=lambda: os.getenv("GROQ_MODEL", "mixtral-8x7b-32768"))
+    groq_model: str = field(default_factory=lambda: os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"))
+    # gpt-oss only: low|medium|high — low cuts reasoning tokens (big latency win for demos)
+    groq_reasoning_effort: str = field(
+        default_factory=lambda: (os.getenv("GROQ_REASONING_EFFORT") or "low").strip().lower()
+    )
     ollama_url: str = field(default_factory=lambda: os.getenv("OLLAMA_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.1"))
     gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))

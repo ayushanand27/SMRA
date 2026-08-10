@@ -241,6 +241,13 @@ def main():
     configure_logging(level=settings.log_level, json_logs=settings.json_logs)
     st.set_page_config(page_title="SMRA — Research Assistant", page_icon="📈", layout="wide")
 
+    # Cold-start warmup (Neon + MiniLM) so the first chat query is not 30–50s
+    try:
+        from smra.utils.warmup import run_warmup
+    except (ModuleNotFoundError, ImportError):
+        from utils.warmup import run_warmup
+    run_warmup(background=True)
+
     ui.inject_theme()
 
     provider = os.getenv("LLM_PROVIDER", "groq")

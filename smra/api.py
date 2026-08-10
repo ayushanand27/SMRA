@@ -76,9 +76,12 @@ async def lifespan(app: FastAPI):
     """Start/stop background ingestion with the API process."""
     try:
         from smra.ingestion.scheduler import start_scheduler, stop_scheduler
+        from smra.utils.warmup import run_warmup
     except (ModuleNotFoundError, ImportError):
         from ingestion.scheduler import start_scheduler, stop_scheduler
+        from utils.warmup import run_warmup
 
+    run_warmup(background=True)
     start_scheduler()
     yield
     stop_scheduler()

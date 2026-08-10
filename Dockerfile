@@ -2,7 +2,9 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PORT=7860 \
+    API_PORT=8010
 
 WORKDIR /app
 
@@ -13,14 +15,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY smra/requirements.txt smra/requirements.txt
+
+# CPU torch first — avoids multi-GB CUDA wheels (needed for HF Spaces free CPU)
 RUN python -m pip install --upgrade pip && \
+    python -m pip install torch --index-url https://download.pytorch.org/whl/cpu && \
     python -m pip install -r smra/requirements.txt
 
 COPY . .
 
-EXPOSE 8501
+RUN chmod +x smra/scripts/start_space.sh
+
+# Hugging Face Spaces expects the public app on 7860
+EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/_stcore/health')" || exit 1
 
-CMD ["streamlit", "run", "smra/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Dual process: FastAPI (ingestion/rate-limit API) + Streamlit UI
+CMD ["bash", "smra/scripts/start_space.sh"]
