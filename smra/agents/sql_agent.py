@@ -46,6 +46,10 @@ Rules:
   explicitly asks for a cross-currency comparison; if they do, still SELECT currency and note no FX conversion exists
 - For "top N by marketcap" or cross-market rankings, include currency in SELECT; prefer filtering
   WHERE currency = 'USD' or WHERE currency = 'INR' when the user asks about one market only
+- This database is Postgres, which is strict about GROUP BY: every selected column must be either
+  aggregated (MAX, MIN, SUM, COUNT, AVG) or listed in GROUP BY. To get "the row with the latest/highest
+  value plus other columns from that same row" (e.g. latest close, top price), do NOT mix MAX()/MIN()
+  with plain columns — instead use ORDER BY <column> DESC/ASC LIMIT 1 (or LIMIT N) with no GROUP BY
 - Never use semicolons at the end
 - Return exactly ONE SELECT statement — never two queries separated by blank lines or semicolons
 - Never use DROP, DELETE, INSERT, UPDATE, ALTER, ATTACH, or PRAGMA

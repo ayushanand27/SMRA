@@ -1,6 +1,11 @@
-# Secrets & local config
-smra/.env
+# Secrets & local config — never commit real credentials.
+# Only *.env.example files are allowed to be tracked.
 .env
+.env.*
+!.env.example
+smra/.env
+smra/.env.*
+!smra/.env.example
 
 # Local docs / references
 /references
@@ -21,21 +26,30 @@ dist/
 .mypy_cache/
 htmlcov/
 .coverage
+.benchmarks/
 
 # Virtual environments
 .venv/
 venv/
 env/
 
-# Data artifacts (regenerated locally)
-smra/data/*.db
+# Data artifacts (regenerated locally — see smra/data/load_db.py)
+*.db
+*.db-journal
+*.db.bak
+*.sqlite
+*.sqlite3
 smra/data/*.pkl
 smra/pdfs/*.pdf
 
 # Audit / logs
-smra/data/audit.db
 *.log
 
-# OS / editor
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS
 .DS_Store
 Thumbs.db

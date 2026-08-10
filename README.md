@@ -1,8 +1,20 @@
+---
+title: SMRA — Stock Market Research Assistant
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Stock Market Research Assistant (SMRA)
 
 **SMRA** is a production-minded multi-agent financial research system: ask natural-language questions and get grounded answers from **structured market data**, **company filings**, and **live web search**. Built for engineers and researchers who need a credible demo of LLM orchestration, RAG, Text-to-SQL, and operational guardrails—not a toy chatbot.
 
 Streamlit UI + FastAPI API · Groq/Ollama/Gemini · Postgres · Pinecone · Langfuse
+
+**Public deploy (free stack):** [Hugging Face Spaces](https://huggingface.co/spaces) (Docker) + [Neon](https://neon.tech) Postgres + [Upstash](https://upstash.com) Redis — see [Cloud deploy](#cloud-deploy-neon--upstash--hugging-face-spaces).
 
 ---
 
@@ -62,6 +74,7 @@ flowchart TB
 - Output sanitization; SQL agent restricted to **`SELECT`-only** with banned-statement regex
 - Optional **`X-API-Key`** auth (constant-time comparison, fail-closed when enabled)
 - **Redis-backed sliding-window rate limiting** (`RATE_LIMIT_PER_MIN` per key/IP); graceful in-memory fallback if Redis is down
+- **Secrets hygiene:** only `.env.example` files (placeholder values) are tracked in git — `.gitignore` blocks every other `.env*` variant. Never commit a real `.env`, `.env.backup*`, or any file containing live keys/connection strings. If a secret is ever committed, treat it as compromised: rotate it at the provider immediately — removing the file from a later commit does **not** remove it from git history (a public GitHub repo serves old commits indefinitely; use `git filter-repo`/BFG plus a force-push if history must be scrubbed)
 
 ### Observability & audit
 - Structured JSON logs: latency, token usage, estimated cost per LLM call
@@ -247,23 +260,74 @@ Load testing against live Groq/Ollama/Gemini burns **quota**, hits **429 rate li
 
 ---
 
+## Cloud deploy (Neon + Upstash + Hugging Face Spaces)
+
+Free stack that keeps **all SMRA features**: Streamlit UI, FastAPI ingestion scheduler, Postgres SQL agent, Redis rate limits, Pinecone RAG, Tavily web, Langfuse.
+
+### 1. Neon (Postgres)
+
+1. Create a free project at [neon.tech](https://neon.tech)
+2. Copy the connection string and rewrite the scheme for SQLAlchemy:
+   ```text
+   postgresql+psycopg2://USER:PASSWORD@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require
+   ```
+3. From your laptop (with local `smra.db` already loaded), seed Neon once:
+   ```bash
+   # Temporarily set DATABASE_URL to the Neon URL in smra/.env, then:
+   python smra/data/load_db.py
+   python -m smra.scripts.migrate_sqlite_to_postgres --truncate
+   ```
+
+### 2. Upstash (Redis)
+
+1. Create a free Redis DB at [upstash.com](https://upstash.com)
+2. Copy the **TLS** URL (`rediss://default:...@....upstash.io:6379`)
+
+### 3. Hugging Face Space (Docker)
+
+1. Push this repo to GitHub (already done) or connect the HF Space to the same repo
+2. Create a Space → **Docker** SDK → port **7860**
+3. In Space **Settings → Variables and secrets**, add:
+
+| Secret | Example |
+|--------|---------|
+| `DATABASE_URL` | Neon URL with `postgresql+psycopg2://` + `?sslmode=require` |
+| `REDIS_URL` | Upstash `rediss://...` |
+| `GROQ_API_KEY` | your Groq key |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` |
+| `PINECONE_API_KEY` | your Pinecone key |
+| `PINECONE_INDEX` / `PINECONE_ENV` | as in local `.env` |
+| `PINECONE_DIMENSION` | `384` |
+| `TAVILY_API_KEY` | your Tavily key |
+| `LANGFUSE_*` | optional |
+| `INGESTION_ENABLED` | `1` |
+| `RATE_LIMIT_ENABLED` | `1` |
+
+4. Build uses `Dockerfile` + `smra/scripts/start_space.sh` (FastAPI on `:8010` internal + Streamlit on `:7860` public)
+5. Ensure Pinecone already has your 8 filings indexed (run `python smra/scripts/ingest_pdfs.py` locally once if needed)
+
+**Cold start:** first request after sleep can take 1–3 minutes while the image/models load.
+
+---
+
 ## Known Limitations & Roadmap
 
 | Limitation | Notes / planned work |
 |------------|---------------------|
-| **No cloud deployment yet** | Local Docker + manual run only; no K8s/Terraform/CI deploy pipeline |
+| **HF Spaces cold starts** | Free Spaces sleep when idle; first wake is slow (torch + embeddings) |
 | **Redis fallback is single-process** | If Redis is down, rate limits are not shared across workers |
 | **Semantic cache is opt-in** | Enabling `SEMANTIC_CACHE_ENABLED` loads embedding model in-process (~400MB RAM); may return stale answers for paraphrased queries |
 | **Compose DB starts empty** | Run migrate + PDF ingest after first `docker compose up` |
 | **No FX conversion** | USD and INR coexist; cross-market rankings are explicitly flagged, not converted |
 | **RAG corpus is static PDFs** | Filings must be re-ingested manually; no live SEC EDGAR pull |
-| **Ingestion on FastAPI only** | Streamlit UI does not start the scheduler; run API for live bars |
+| **Ingestion on FastAPI only** | Streamlit UI does not start the scheduler; Space entrypoint starts API for live bars |
 | **LLM provider dependency** | Groq/Tavily/Pinecone keys required for full demo; offline modes are partial |
 | **Mock vs real load tests** | `MOCK_MODE=1` + `load_test.py --mode infra` measures routing/DB/cache/rate limits **without** real LLM latency; run `--mode smoke` with mock off at low concurrency for true end-to-end timing |
 | **SQL repair multi-statement edge case** | Repair retries occasionally returned two `SELECT`s separated by blank lines (Postgres rejected as syntax error); fixed via `_normalize_sql()` extracting a single statement—found during load testing |
-| **Multi-hop LLM latency** | SQL/HYBRID routes can chain **3–4 sequential LLM calls** (router → SQL gen → synthesis, etc.); with `llama-3.1-8b-instant` expect **~20–30s** end-to-end—characteristic of the pipeline, not a bug; future work: parallelize independent hops or use a faster/larger model where quota allows |
+| **Multi-hop LLM latency** | SQL/HYBRID routes can chain **3–4 sequential LLM calls** (router → SQL gen → synthesis, etc.); with `openai/gpt-oss-20b` expect multi-second end-to-end—characteristic of the pipeline, not a bug; future work: parallelize independent hops or use a faster/larger model where quota allows |
+| **`llama-3.1-8b-instant` retirement** | Groq is shutting this model down **2026-08-16**. Set `GROQ_MODEL=openai/gpt-oss-20b` (the `.env.example` default) in every deployed `.env`/Space secret before that date or `LLM_PROVIDER=groq` calls will start failing |
 
-**Roadmap:** managed deployment (Render/Fly), incremental Pinecone upsert (no full re-index), SEC/EDGAR auto-fetch, FX-normalized analytics view, Prometheus metrics export.
+**Roadmap:** incremental Pinecone upsert (no full re-index), SEC/EDGAR auto-fetch, FX-normalized analytics view, Prometheus metrics export.
 
 ---
 
@@ -287,6 +351,8 @@ smra/
 tests/                      # pytest suite (86 tests)
 .github/workflows/ci.yml    # lint + test + offline evals
 docker-compose.yml          # Postgres + Redis + FastAPI
+Dockerfile                  # HF Spaces / local image (CPU torch + dual entrypoint)
+smra/scripts/start_space.sh # FastAPI :8010 + Streamlit :7860
 ```
 
 ---
