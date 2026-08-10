@@ -21,6 +21,7 @@ else:
     load_dotenv(override=True)
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 try:
@@ -70,6 +71,13 @@ logger = logging.getLogger("smra.api")
 settings = get_settings()
 configure_logging(level=settings.log_level, json_logs=settings.json_logs)
 
+try:
+    from smra.utils.config import validate_production_config
+except (ModuleNotFoundError, ImportError):
+    from utils.config import validate_production_config
+
+validate_production_config(settings)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,6 +101,24 @@ app = FastAPI(
     version="0.5.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
+)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
 
 
 def auth_and_limit(request: Request, x_api_key: Optional[str] = Header(default=None)) -> str:

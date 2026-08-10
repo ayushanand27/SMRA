@@ -10,6 +10,10 @@ pinned: false
 
 # Stock Market Research Assistant (SMRA)
 
+[![CI](https://github.com/ayushanand27/SMRA/actions/workflows/ci.yml/badge.svg)](https://github.com/ayushanand27/SMRA/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 **SMRA** is a production-minded multi-agent financial research system: ask natural-language questions and get grounded answers from **structured market data**, **company filings**, and **live web search**. Built for engineers and researchers who need a credible demo of LLM orchestration, RAG, Text-to-SQL, and operational guardrails—not a toy chatbot.
 
 Streamlit UI + FastAPI API · Groq/Ollama/Gemini · Postgres · Pinecone · Langfuse
@@ -150,6 +154,16 @@ python smra/data/load_db.py
 python -m smra.scripts.migrate_sqlite_to_postgres --truncate
 python smra/scripts/ingest_pdfs.py
 ```
+
+**Applying schema changes to an existing Postgres DB** (e.g. after `git pull`, or against Neon in
+prod) — no need to re-run the full SQLite migration:
+
+```bash
+python -m smra.db.migrate
+```
+
+Tracks applied migrations in a `schema_migrations` table, so `smra/db/schema_postgres.sql` and
+each file under `smra/db/migrations/` run exactly once per database, in order.
 
 **Verify API:** http://localhost:8010/health
 

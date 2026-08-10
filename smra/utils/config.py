@@ -87,6 +87,14 @@ class Settings:
         default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379").strip()
     )
 
+    # Deployment environment ("development" | "production"); gates strict startup checks below
+    env: str = field(default_factory=lambda: (os.getenv("ENV") or "development").strip().lower())
+    cors_allowed_origins: List[str] = field(
+        default_factory=lambda: [
+            o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8501").split(",") if o.strip()
+        ]
+    )
+
     # Streamlit UI gate (optional shared password)
     ui_password: str = field(default_factory=lambda: os.getenv("UI_PASSWORD", ""))
 
@@ -127,3 +135,24 @@ def is_mock_mode() -> bool:
 def get_settings() -> Settings:
     """Build a fresh Settings snapshot (re-reads env, useful after load_dotenv)."""
     return Settings()
+
+
+def validate_production_config(settings: "Settings") -> None:
+    """Fail closed if ENV=production but the API would boot without auth/rate limiting.
+
+    Local dev / demos leave AUTH_ENABLED and RATE_LIMIT off on purpose (see .env.example);
+    this only bites when an operator explicitly sets ENV=production.
+    """
+    if settings.env != "production":
+        return
+    problems = []
+    if not settings.auth_enabled or not settings.api_keys:
+        problems.append("AUTH_ENABLED=1 with at least one SMRA_API_KEYS entry is required")
+    if not settings.rate_limit_enabled:
+        problems.append("RATE_LIMIT_ENABLED=1 is required")
+    if problems:
+        raise RuntimeError(
+            "Refusing to start with ENV=production and insecure config: "
+            + "; ".join(problems)
+            + ". Fix the env vars above, or unset ENV/set ENV=development for local use."
+        )

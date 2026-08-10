@@ -246,6 +246,22 @@ def _call_gemini(system_prompt: str, user_prompt: str, model: str, max_tokens: i
         return response.text
 
 
+def _fallback_provider(settings, current_provider: str):
+    """Pick a backup (provider, fn, model) if one is usable, else None.
+
+    Only Gemini is wired as an auto-fallback today: it's the one pairing where a second
+    provider's credentials are commonly already present (embeddings/RAG use OpenAI/Gemini
+    keys independently of the chat provider) and Gemini doesn't need a local server like Ollama.
+    A missing GEMINI_API_KEY/GOOGLE_API_KEY makes this a no-op — behavior is unchanged unless
+    the operator has actually configured a second provider.
+    """
+    if current_provider in {"mock", "gemini"}:
+        return None
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        return "gemini", _call_gemini, settings.gemini_model
+    return None
+
+
 def call_llm(system_prompt: str, user_prompt: str, max_tokens: int | None = None, temperature: float | None = None) -> str:
     """Unified LLM entry point selected via LLM_PROVIDER (groq | ollama | gemini | mock).
 
@@ -278,6 +294,17 @@ def call_llm(system_prompt: str, user_prompt: str, max_tokens: int | None = None
         )
 
     with observe_generation(name="call_llm", model=model, provider=provider, prompt=user_prompt) as gen:
-        output = fn(system_prompt, user_prompt, model, max_tokens, temperature)
+        try:
+            output = fn(system_prompt, user_prompt, model, max_tokens, temperature)
+        except Exception as exc:
+            fallback = _fallback_provider(settings, provider)
+            if fallback is None:
+                raise
+            fb_provider, fb_fn, fb_model = fallback
+            logger.warning(
+                "Primary LLM provider '%s' failed (%s); falling back to '%s'", provider, exc, fb_provider
+            )
+            output = fb_fn(system_prompt, user_prompt, fb_model, max_tokens, temperature)
+            model = fb_model
         gen["output"] = output
         return output

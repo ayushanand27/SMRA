@@ -23,7 +23,11 @@ RUN python -m pip install --upgrade pip && \
 
 COPY . .
 
-RUN chmod +x smra/scripts/start_space.sh
+RUN chmod +x smra/scripts/start_space.sh && \
+    useradd --create-home --uid 1000 --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
 
 # Hugging Face Spaces expects the public app on 7860
 EXPOSE 7860
