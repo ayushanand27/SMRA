@@ -10,13 +10,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   returning `503` on a hard Postgres failure — `/health` stays a cheap liveness-only check
 - `pip-audit` dependency vulnerability scan added to CI (report-only for now)
 
+### Security
+- Bumped `pypdf` `<6.0.0` → `<7.0.0` (6.15.0), clearing ~24 CVEs. Verified via full test suite
+  and a live RAG query (`apple.pdf` citation, correct figures) since `pypdf` isn't covered by
+  any unit test directly — only used in `smra/scripts/ingest_pdfs.py`
+
 ### Known issues surfaced this pass (not yet fixed, documented in README Known Limitations)
-- `pip-audit` currently flags real CVEs in transitive deps (`pypdf`, `pillow`, `aiohttp`,
-  `langchain-core`, `langchain-text-splitters`, `transformers`) whose fixes require untested
-  major-version bumps — deferred to a dedicated upgrade pass rather than bumped blind
+- Attempted `pillow`, `aiohttp`, and `transformers`/`sentence-transformers` CVE fixes too; all
+  three broke something real on testing and were reverted:
+  - `pillow≥12` conflicts with `streamlit==1.41.1` (`pillow<12` required)
+  - `transformers 5.x`/`sentence-transformers 5.x` fail to *import* at runtime here (`tokenizers`
+    ABI mismatch) despite pip reporting no conflict — caught 2 semantic-cache test failures
+  - `aiohttp≥3.11` forces `langchain-pinecone≥0.2.7` → drags `langchain-core` to the `1.x` line,
+    breaking `langchain`/`langchain-community`/`langchain-huggingface`/`langgraph` (pinned
+    `<1.0.0`); the CVE fixes for `langchain-core`/`langchain-text-splitters` only exist in that
+    `1.x` line, so this needs a full LangChain 1.0 migration, not a version bump
 - No static type checking (`mypy` takes 15+ min on this codebase and there's no type-hint
   discipline yet) — deliberately not added as a CI gate
-- No hash-pinned dependency lockfile
+- No hash-pinned dependency lockfile — a same-machine attempt hit a Windows 260-char path limit
+  creating a venv, and a plain `pip freeze` on the shared global env pulled in ~400 unrelated
+  packages; needs a clean environment (shorter path or Linux/WSL), good candidate for a CI job
 
 ### Fixed
 - Local dev environment had a `starlette 1.6.0` / `fastapi 0.115.6` version mismatch (installed
