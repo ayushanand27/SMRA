@@ -78,7 +78,11 @@ flowchart TB
 - Output sanitization; SQL agent restricted to **`SELECT`-only** with banned-statement regex
 - Optional **`X-API-Key`** auth (constant-time comparison, fail-closed when enabled)
 - **Redis-backed sliding-window rate limiting** (`RATE_LIMIT_PER_MIN` per key/IP); graceful in-memory fallback if Redis is down
-- **Secrets hygiene:** only `.env.example` files (placeholder values) are tracked in git — `.gitignore` blocks every other `.env*` variant. Never commit a real `.env`, `.env.backup*`, or any file containing live keys/connection strings. If a secret is ever committed, treat it as compromised: rotate it at the provider immediately — removing the file from a later commit does **not** remove it from git history (a public GitHub repo serves old commits indefinitely; use `git filter-repo`/BFG plus a force-push if history must be scrubbed)
+- **CORS + security headers** on the FastAPI service (`CORS_ALLOWED_ORIGINS` allow-list; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Strict-Transport-Security` on every response)
+- **`ENV=production` startup gate:** the API refuses to boot if `AUTH_ENABLED`/`RATE_LIMIT_ENABLED` are off while `ENV=production`, so an insecure config can't reach prod by accident
+- **Docker image runs as a non-root user** (`appuser`), not root
+- **LLM provider failover:** if the primary Groq call hard-fails, `call_llm` automatically retries via Gemini when `GEMINI_API_KEY`/`GOOGLE_API_KEY` is configured, instead of surfacing an error
+- **Secrets hygiene:** only `.env.example` files (placeholder values) are tracked in git — `.gitignore` blocks every other `.env*` variant, plus `*.db`/`*.sqlite*` binaries. **Gitleaks** scans every commit in CI and as a `pre-commit` hook (`.pre-commit-config.yaml`) so a secret is caught before it lands, not after. Never commit a real `.env` or any file containing live keys/connection strings — if one ever is, treat it as compromised: rotate it at the provider immediately, since removing the file from a later commit does **not** remove it from git history (`git filter-repo`/BFG + force-push are required to actually scrub it)
 
 ### Observability & audit
 - Structured JSON logs: latency, token usage, estimated cost per LLM call
@@ -92,10 +96,13 @@ flowchart TB
 - Faithfulness helper validates numeric claims against retrieved context
 
 ### Quality & delivery
-- **86** automated unit tests (pytest) + offline eval suite
-- **GitHub Actions CI:** ruff lint, pytest, golden evals
+- **86** automated unit tests (pytest, ~38% line coverage, enforced floor 35% via `pytest-cov`) + offline eval suite (100% routing accuracy on the golden set)
+- **GitHub Actions CI:** ruff lint + pytest + golden evals across **Python 3.10/3.11/3.12**, a dedicated Gitleaks secret-scan job, and a Docker image build check
+- **Dependabot** for pip, GitHub Actions, and Docker base-image updates
+- **`smra/db/migrate.py`:** tracked, idempotent Postgres migration runner (`schema_migrations` table) — safe to re-run against any environment
+- CODEOWNERS, PR template, and issue templates; changes tracked in [`CHANGELOG.md`](CHANGELOG.md)
 - **Docker Compose** one-command Postgres + Redis + FastAPI stack
-- **Dockerfile** with Tesseract + Poppler for OCR-capable ingestion
+- **Dockerfile** with Tesseract + Poppler for OCR-capable ingestion, running as a non-root user
 - Optional **semantic answer cache** (`SEMANTIC_CACHE_ENABLED`) for similar-query reuse
 
 ---
@@ -111,9 +118,9 @@ flowchart TB
 | **Embeddings / retrieval** | `sentence-transformers/all-MiniLM-L6-v2`, BM25, cross-encoder rerank |
 | **Web search** | Tavily API |
 | **Document processing** | PyMuPDF, pytesseract, pdf2image, Poppler |
-| **Security / limits** | Custom guardrails, HMAC API keys, Redis sliding-window rate limit |
+| **Security / limits** | Custom guardrails, HMAC API keys, Redis sliding-window rate limit, CORS + security headers, Gitleaks |
 | **Observability** | Langfuse, structured logging, SQLite audit DB |
-| **Infra** | Docker, GitHub Actions, python-dotenv centralized config |
+| **Infra** | Docker (non-root), Docker Compose, GitHub Actions (matrix + secret-scan + Docker build), Dependabot, pre-commit, python-dotenv centralized config |
 
 ---
 
@@ -351,22 +358,26 @@ Free stack that keeps **all SMRA features**: Streamlit UI, FastAPI ingestion sch
 smra/
 ├── app.py / ui.py          # Streamlit chat UI
 ├── api.py                  # FastAPI (/query, /health, /audit)
-├── router.py               # Intent classification
+├── router.py                # Intent classification
 ├── orchestrator.py         # HYBRID synthesis
 ├── agents/                 # sql_agent, rag_agent, web_agent
-├── ingestion/              # scheduler, upsert (Postgres)
-├── data_sources/           # yfinance adapter
-├── config/tickers.py       # 50 US + NSE symbols
-├── db/                     # Postgres schema + migrations
-├── scripts/                # ingest_pdfs, migrate_sqlite_to_postgres, load_test.py
-├── eval/                   # golden dataset, LLM judge
-├── utils/                  # db, security, guardrails, observability, currency
-└── pdfs/                   # 8 company filings
-tests/                      # pytest suite (86 tests)
-.github/workflows/ci.yml    # lint + test + offline evals
-docker-compose.yml          # Postgres + Redis + FastAPI
-Dockerfile                  # HF Spaces / local image (CPU torch + dual entrypoint)
-smra/scripts/start_space.sh # FastAPI :8010 + Streamlit :7860
+├── ingestion/               # scheduler, upsert (Postgres)
+├── data_sources/            # yfinance adapter
+├── config/tickers.py        # 50 US + NSE symbols
+├── db/                      # Postgres schema, migrations/, migrate.py runner
+├── scripts/                 # ingest_pdfs, migrate_sqlite_to_postgres, load_test.py, start_space.sh
+├── eval/                    # golden dataset, LLM judge
+├── utils/                   # db, security, guardrails, observability, currency, warmup
+└── pdfs/                    # 8 company filings
+tests/                       # pytest suite (86 tests)
+.github/
+├── workflows/ci.yml         # lint + test matrix + secret-scan + docker-build + offline evals
+├── dependabot.yml           # pip / github-actions / docker updates
+├── CODEOWNERS, PULL_REQUEST_TEMPLATE.md, ISSUE_TEMPLATE/
+.pre-commit-config.yaml      # ruff + gitleaks + hygiene hooks
+CHANGELOG.md                 # Keep a Changelog format
+docker-compose.yml           # Postgres + Redis + FastAPI
+Dockerfile                   # HF Spaces / local image (non-root, CPU torch, dual entrypoint)
 ```
 
 ---

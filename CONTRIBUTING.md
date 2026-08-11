@@ -8,6 +8,7 @@ Thanks for your interest in improving the Stock Market Research Assistant.
 python -m pip install -r smra/requirements.txt
 python -m pip install -r smra/requirements-dev.txt
 cp smra/.env.example smra/.env   # then add your keys
+pre-commit install               # runs ruff + gitleaks + hygiene checks on every commit
 ```
 
 ## Before opening a PR
@@ -15,12 +16,13 @@ cp smra/.env.example smra/.env   # then add your keys
 Run the full local quality gate:
 
 ```bash
-ruff check smra tests          # lint
-pytest                         # unit tests
-python -m smra.eval.run_eval   # offline routing/guardrail evals
+ruff check smra tests                                    # lint
+pytest --cov=smra --cov-report=term-missing               # unit tests + coverage (floor: 35%)
+python -m smra.eval.run_eval --threshold 0.7               # offline routing/guardrail evals
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint + tests on every PR and must be green.
+CI (`.github/workflows/ci.yml`) runs lint + tests (Python 3.10/3.11/3.12) + a Gitleaks secret
+scan + a Docker build check on every PR and must be green.
 
 ## Guidelines
 
