@@ -20,7 +20,7 @@ if _env_path.exists():
 else:
     load_dotenv(override=True)
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
@@ -33,6 +33,7 @@ try:
     from smra.router import classify_intent
     from smra.utils import audit
     from smra.utils.config import get_settings
+    from smra.utils.db import scalar_query
     from smra.utils.friendly_errors import (
         agent_error_answer,
         friendly_llm_message,
@@ -43,7 +44,7 @@ try:
     from smra.utils.guardrails import check_input, sanitize_output
     from smra.utils.observability import configure_logging, get_query_id, new_query_id
     from smra.utils.schemas import expand_routes
-    from smra.utils.security import check_rate_limit, verify_api_key
+    from smra.utils.security import _get_redis_client, check_rate_limit, verify_api_key
 except (ModuleNotFoundError, ImportError):
     from agents.rag_agent import run_rag_agent
     from agents.sql_agent import run_sql_agent
@@ -52,6 +53,7 @@ except (ModuleNotFoundError, ImportError):
     from orchestrator import synthesize_hybrid_answer
     from router import classify_intent
     from utils.config import get_settings
+    from utils.db import scalar_query
     from utils.friendly_errors import (
         agent_error_answer,
         friendly_llm_message,
@@ -62,7 +64,7 @@ except (ModuleNotFoundError, ImportError):
     from utils.guardrails import check_input, sanitize_output
     from utils.observability import configure_logging, get_query_id, new_query_id
     from utils.schemas import expand_routes
-    from utils.security import check_rate_limit, verify_api_key
+    from utils.security import _get_redis_client, check_rate_limit, verify_api_key
 
     from utils import audit
 
@@ -170,6 +172,39 @@ def health() -> dict:
         "ingestion_enabled": settings.ingestion_enabled,
         "postgres": bool(settings.database_url),
     }
+
+
+@app.get("/health/ready")
+def health_ready(response: Response) -> dict:
+    """Readiness probe: actually pings Postgres and Redis instead of checking config presence.
+
+    Use /health for a cheap liveness check; use this before routing real traffic to an
+    instance (e.g. behind a load balancer) since a query can still fail even when the
+    process is up if the DB or Redis is unreachable.
+    """
+    checks: dict[str, Any] = {}
+
+    if settings.database_url:
+        try:
+            scalar_query("SELECT 1")
+            checks["postgres"] = "ok"
+        except Exception as exc:
+            checks["postgres"] = f"error: {exc}"[:200]
+    else:
+        checks["postgres"] = "not_configured (using SQLite fallback)"
+
+    if settings.rate_limit_enabled:
+        try:
+            client = _get_redis_client()
+            checks["redis"] = "ok" if client is not None else "unreachable (using in-memory fallback)"
+        except Exception as exc:
+            checks["redis"] = f"error: {exc}"[:200]
+    else:
+        checks["redis"] = "disabled"
+
+    hard_failure = isinstance(checks.get("postgres"), str) and checks["postgres"].startswith("error:")
+    response.status_code = 503 if hard_failure else 200
+    return {"ready": not hard_failure, "checks": checks}
 
 
 def _agent_answer(result: dict, agent: str) -> str:

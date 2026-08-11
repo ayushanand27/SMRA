@@ -56,6 +56,25 @@ jobs:
           name: coverage-xml
           path: coverage.xml
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Report-only for now: known CVEs exist in transitive deps (pypdf, pillow, aiohttp,
+      # langchain-core, transformers) whose fixes require untested major-version bumps.
+      # See README Known Limitations. Flip to a hard failure once those are cleared.
+      - name: pip-audit (non-blocking)
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          python -m pip_audit -r smra/requirements.txt
+
   docker-build:
     runs-on: ubuntu-latest
     steps:

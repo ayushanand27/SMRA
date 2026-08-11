@@ -96,8 +96,9 @@ flowchart TB
 - Faithfulness helper validates numeric claims against retrieved context
 
 ### Quality & delivery
-- **86** automated unit tests (pytest, ~38% line coverage, enforced floor 35% via `pytest-cov`) + offline eval suite (100% routing accuracy on the golden set)
-- **GitHub Actions CI:** ruff lint + pytest + golden evals across **Python 3.10/3.11/3.12**, a dedicated Gitleaks secret-scan job, and a Docker image build check
+- **86** automated unit tests (pytest, ~37% line coverage, enforced floor 35% via `pytest-cov`) + offline eval suite (100% routing accuracy on the golden set)
+- **GitHub Actions CI:** ruff lint + pytest + golden evals across **Python 3.10/3.11/3.12**, a dedicated Gitleaks secret-scan job, a `pip-audit` dependency vulnerability scan (report-only, see Known Limitations), and a Docker image build check
+- **`/health` vs `/health/ready`:** liveness (always cheap) vs readiness (pings Postgres + Redis for real, returns `503` on a hard DB failure) — use `/health/ready` before routing real traffic to an instance
 - **Dependabot** for pip, GitHub Actions, and Docker base-image updates
 - **`smra/db/migrate.py`:** tracked, idempotent Postgres migration runner (`schema_migrations` table) — safe to re-run against any environment
 - CODEOWNERS, PR template, and issue templates; changes tracked in [`CHANGELOG.md`](CHANGELOG.md)
@@ -347,8 +348,11 @@ Free stack that keeps **all SMRA features**: Streamlit UI, FastAPI ingestion sch
 | **SQL repair multi-statement edge case** | Repair retries occasionally returned two `SELECT`s separated by blank lines (Postgres rejected as syntax error); fixed via `_normalize_sql()` extracting a single statement—found during load testing |
 | **Multi-hop LLM latency** | SQL/HYBRID routes can chain **3–4 sequential LLM calls** (router → SQL gen → synthesis, etc.); with `openai/gpt-oss-20b` expect multi-second end-to-end—characteristic of the pipeline, not a bug; future work: parallelize independent hops or use a faster/larger model where quota allows |
 | **`llama-3.1-8b-instant` retirement** | Groq is shutting this model down **2026-08-16**. Set `GROQ_MODEL=openai/gpt-oss-20b` (the `.env.example` default) in every deployed `.env`/Space secret before that date or `LLM_PROVIDER=groq` calls will start failing |
+| **Known CVEs in transitive dependencies** | `pip-audit` (CI, report-only) currently flags `pypdf`, `pillow`, `aiohttp`, `langchain-core`, `langchain-text-splitters`, and `transformers` — all fixed upstream only by a **major**-version bump that needs a dedicated upgrade-and-test pass (PDF/OCR extraction and embeddings are the at-risk surfaces). Tracked via Dependabot; not blindly bumped to avoid breaking ingestion untested |
+| **No static type checking** | `mypy --ignore-missing-imports` takes 15+ minutes on this codebase (heavy stub resolution for torch/transformers/langchain/pandas) and the code has no type-hint discipline yet — not added as a CI gate for now; ruff (lint) + pytest (behavior) are the enforced checks |
+| **No dependency lockfile** | `smra/requirements*.txt` use version ranges, not a hash-pinned lockfile (`uv.lock`/`pip-compile`); builds are reproducible-ish but not byte-identical across installs |
 
-**Roadmap:** incremental Pinecone upsert (no full re-index), SEC/EDGAR auto-fetch, FX-normalized analytics view, Prometheus metrics export.
+**Roadmap:** incremental Pinecone upsert (no full re-index), SEC/EDGAR auto-fetch, FX-normalized analytics view, Prometheus metrics export, dependency lockfile, resolving the CVEs above.
 
 ---
 
@@ -385,8 +389,11 @@ Dockerfile                   # HF Spaces / local image (non-root, CPU torch, dua
 ## API Reference (FastAPI)
 
 ```bash
-# Health
+# Health (liveness — always cheap, no dependency checks)
 curl http://localhost:8010/health
+
+# Readiness (pings Postgres + Redis; 503 if Postgres is unreachable)
+curl http://localhost:8010/health/ready
 
 # Query (auth optional when AUTH_ENABLED=0)
 curl -X POST http://localhost:8010/query \

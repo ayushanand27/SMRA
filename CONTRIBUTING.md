@@ -4,7 +4,14 @@ Thanks for your interest in improving the Stock Market Research Assistant.
 
 ## Development setup
 
+Use a **project-local virtual environment** — installing into a shared/global Python breaks
+this project when some other project's install pulls in an incompatible transitive dependency
+(this has actually happened: a global `starlette` upgrade unrelated to SMRA crashed the API on
+startup with a FastAPI/Starlette version mismatch).
+
 ```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows;  source .venv/bin/activate on macOS/Linux
 python -m pip install -r smra/requirements.txt
 python -m pip install -r smra/requirements-dev.txt
 cp smra/.env.example smra/.env   # then add your keys

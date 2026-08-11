@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- `/health/ready` endpoint: real readiness probe that pings Postgres (`SELECT 1`) and Redis,
+  returning `503` on a hard Postgres failure — `/health` stays a cheap liveness-only check
+- `pip-audit` dependency vulnerability scan added to CI (report-only for now)
+
+### Known issues surfaced this pass (not yet fixed, documented in README Known Limitations)
+- `pip-audit` currently flags real CVEs in transitive deps (`pypdf`, `pillow`, `aiohttp`,
+  `langchain-core`, `langchain-text-splitters`, `transformers`) whose fixes require untested
+  major-version bumps — deferred to a dedicated upgrade pass rather than bumped blind
+- No static type checking (`mypy` takes 15+ min on this codebase and there's no type-hint
+  discipline yet) — deliberately not added as a CI gate
+- No hash-pinned dependency lockfile
+
+### Fixed
+- Local dev environment had a `starlette 1.6.0` / `fastapi 0.115.6` version mismatch (installed
+  outside this project's control, via a shared global Python environment) that crashed the API
+  on startup with `TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'`;
+  pinned `starlette` back to a compatible `<0.42` version. Root cause — no project-local virtual
+  environment — is unresolved; see README.
+
 ## [0.3.0] - 2026-08-11
 
 ### Security
