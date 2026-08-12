@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Deterministic financial calculations** (`smra/utils/financial_calc.py`): moving averages,
+  % return, CAGR, annualized volatility, and 52-week high/low are computed in pure Python from
+  the SQL agent's full result set, never estimated by the LLM. Handles multi-symbol results
+  (per-symbol computation, not a meaningless blended average across different stocks). Two real
+  bugs found and fixed via live end-to-end testing against ground truth (not just unit tests):
+  (1) the LLM sometimes wrote `AVG(close) GROUP BY date` for "moving average" questions, which
+  is mathematically a no-op per row, not a rolling average — SQL_SYSTEM now explicitly forbids
+  aggregating for these query types and requires plain per-date rows instead; (2) the SQL used
+  ascending `ORDER BY date LIMIT N`, fetching the *oldest* N rows instead of the most recent —
+  fixed to require `DESC` when the user doesn't give an explicit date range. Verified after both
+  fixes: NVDA's 20-day moving average from the API matched a value independently computed
+  straight from the database, to the cent ($795.41).
 - **Multi-turn conversation memory** (`smra/utils/conversation.py`): follow-up questions are
   resolved into standalone questions using recent chat history before routing. Stateless —
   the client (Streamlit session, or an API caller's `history` array on `/query`) owns history,

@@ -7,11 +7,13 @@ import pandas as pd
 try:
     from smra.utils.currency import build_synthesis_notes, enrich_dataframe_currency
     from smra.utils.db import read_sql_query
+    from smra.utils.financial_calc import build_calc_notes
     from smra.utils.llm import call_llm
     from smra.utils.schemas import error_response, success_response
 except (ModuleNotFoundError, ImportError):
     from utils.currency import build_synthesis_notes, enrich_dataframe_currency
     from utils.db import read_sql_query
+    from utils.financial_calc import build_calc_notes
     from utils.schemas import error_response, success_response
 
     from utils.llm import call_llm
@@ -39,7 +41,13 @@ Given this schema:
 Rules:
 - Return ONLY a SELECT query, no explanation, no markdown, no backticks
 - Always use ORDER BY date for time series
-- For moving averages, fetch enough rows (e.g. LIMIT 100 for 20-day MA)
+- For moving averages, % change / return, CAGR, volatility, or 52-week high/low WITHOUT an
+  explicit date range from the user (implying "as of now"): fetch the MOST RECENT rows —
+  ORDER BY date DESC LIMIT N (e.g. LIMIT 100 for a 20-day MA), never ascending from the oldest
+  date. Do NOT compute the figure yourself with AVG()/GROUP BY; SELECT plain symbol, date, close,
+  currency columns, one row per date — a downstream deterministic step computes the actual
+  figure from these raw rows. If the user gives an explicit date range, filter WHERE date
+  BETWEEN ... instead of DESC LIMIT
 - Dates are stored as TEXT strings in 'YYYY-MM-DD' format. Always use exact string match e.g. WHERE date = '2025-01-03'
 - Always include the currency column when selecting symbol, close, open, high, low, or marketcap
 - Do not compare price or marketcap numerically across rows with different currency values unless the user
@@ -59,6 +67,11 @@ SYNTHESIS_SYSTEM = """You are a financial analyst assistant.
 Given a SQL query result, write a clear 2-4 sentence answer.
 Include specific numbers. Be direct and factual.
 Do not give investment advice.
+
+Computed figures (mandatory): if the prompt includes lines marked "COMPUTED (Python, not LLM)",
+those numbers were calculated deterministically from the full result set — state them exactly as
+given. Never estimate, recompute, or eyeball a moving average, % change, CAGR, volatility, or
+high/low from the printed table yourself; only use a COMPUTED line for that figure.
 
 Currency rules (mandatory):
 - Label every price/marketcap using the currency column value for that row (USD → $ ; INR → ₹ or "INR")
@@ -133,7 +146,11 @@ def _run_fallback_query(symbol: str) -> tuple[pd.DataFrame, str]:
 def _build_synthesis_prompt(user_question: str, df: pd.DataFrame) -> str:
     enriched = enrich_dataframe_currency(df)
     preview = enriched.head(20).to_string(index=False)
-    notes = build_synthesis_notes(user_question, enriched)
+    # Calculations run on the full result, not the 20-row preview above — a moving average
+    # or CAGR must see every fetched row, not just what's printed for the LLM to read.
+    notes = "\n".join(
+        n for n in (build_synthesis_notes(user_question, enriched), build_calc_notes(user_question, enriched)) if n
+    )
     parts = [f"User question: {user_question}", "", f"Query result (top rows):\n{preview}"]
     if notes:
         parts.extend(["", "Synthesis instructions:", notes])

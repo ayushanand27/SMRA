@@ -73,6 +73,17 @@ flowchart TB
 - Explicit **`currency`** column (`USD` / `INR`)—no silent cross-currency comparison
 - SQLite fallback when `DATABASE_URL` is unset (local dev only)
 
+### Deterministic financial calculations (never left to the LLM)
+- `smra/utils/financial_calc.py`: moving averages, % return, CAGR, annualized volatility, and
+  52-week high/low are computed in pure Python from the full SQL result — never estimated by the
+  LLM from a printed table. The SQL agent's prompt requires plain `symbol, date, close, currency`
+  rows (no `AVG()`/`GROUP BY`) for these query types so the raw series is actually available to
+  compute from; the synthesis LLM is instructed to state the computed figure exactly, not
+  recompute it. Handles multi-symbol results (e.g. "compare AAPL and NVDA") by computing per
+  symbol instead of silently averaging across different stocks
+- Verified against ground truth: asking for NVDA's 20-day moving average returns the exact value
+  independently computed straight from the database (`$795.41`, matched to the cent)
+
 ### RAG over 8 real company filings
 - PDFs: Apple, NVIDIA, Amazon, Microsoft, Tesla, JPMorgan Chase, TCS, Reliance
 - PyMuPDF text extraction + Tesseract OCR for scanned pages
