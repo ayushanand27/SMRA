@@ -25,6 +25,7 @@ try:
     from smra.router import classify_intent
     from smra.utils import audit
     from smra.utils.config import get_settings
+    from smra.utils.conversation import contextualize_query
     from smra.utils.friendly_errors import safe_agent_call
     from smra.utils.guardrails import check_input
     from smra.utils.observability import configure_logging, get_query_id, new_query_id
@@ -38,6 +39,7 @@ except (ModuleNotFoundError, ImportError):
     from orchestrator import synthesize_hybrid_answer
     from router import classify_intent
     from utils.config import get_settings
+    from utils.conversation import contextualize_query
     from utils.friendly_errors import safe_agent_call
     from utils.guardrails import check_input
     from utils.observability import configure_logging, get_query_id, new_query_id
@@ -286,6 +288,11 @@ def main():
                 st.markdown(msg["content"])
 
     if prompt := st.chat_input("Ask about any stock, sector, or filing..."):
+        history_for_context = [
+            {"role": m["role"], "content": m.get("content", "")}
+            for m in st.session_state.messages
+            if (m.get("content") or "").strip()
+        ]
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -298,7 +305,13 @@ def main():
             if not guard.ok:
                 st.error(f"Your query could not be processed: {guard.reason}")
                 st.stop()
-            prompt = guard.text
+            original_prompt = guard.text
+            prompt = original_prompt
+            if history_for_context:
+                prompt = contextualize_query(history_for_context, original_prompt)
+            if prompt != original_prompt:
+                st.caption(f"Interpreted as: *{prompt}*")
+                assistant_msg["resolved_query"] = prompt
 
             cached = get_cached_answer(prompt)
             if cached and cached.get("answer"):
@@ -308,7 +321,7 @@ def main():
                 ui.safe_markdown(cached.get("answer", ""))
                 audit.record(
                     query_id=get_query_id(),
-                    query=prompt,
+                    query=original_prompt,
                     routes=cached.get("routes", []),
                     answer=cached.get("answer", ""),
                     sql=cached.get("sql", ""),
@@ -410,7 +423,7 @@ def main():
 
             audit.record(
                 query_id=get_query_id(),
-                query=prompt,
+                query=original_prompt,
                 routes=routes,
                 answer=audit_answer,
                 sql=audit_sql,

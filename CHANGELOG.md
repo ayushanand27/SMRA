@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Multi-turn conversation memory** (`smra/utils/conversation.py`): follow-up questions are
+  resolved into standalone questions using recent chat history before routing. Stateless —
+  the client (Streamlit session, or an API caller's `history` array on `/query`) owns history,
+  not the server. No-ops (zero extra latency) when there's no history. The resolved question
+  is surfaced back via `resolved_query` in the API response / "Interpreted as: …" in the UI;
+  the audit trail keeps the original question the user actually typed. Verified live:
+  "What about NVIDIA revenue instead?" (with a prior Apple-10-K exchange in history) correctly
+  resolved to "What was NVIDIA revenue in their 10-K?" and returned a grounded, cited answer.
 - `/health/ready` endpoint: real readiness probe that pings Postgres (`SELECT 1`) and Redis,
   returning `503` on a hard Postgres failure — `/health` stays a cheap liveness-only check
 - `pip-audit` dependency vulnerability scan added to CI (report-only for now)

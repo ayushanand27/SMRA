@@ -58,6 +58,13 @@ flowchart TB
 - LLM intent router (`SQL` / `RAG` / `WEB` / `HYBRID`) with deterministic keyword fallback
 - HYBRID mode runs SQL + RAG in parallel and synthesizes one coherent answer
 - Unified response schemas, expandable routes, and per-request `query_id` for tracing
+- **Multi-turn conversation memory:** follow-ups like *"what about last year?"* or *"what about
+  NVIDIA instead?"* are resolved into standalone questions using recent chat history
+  (`smra/utils/conversation.py`) before routing — stateless by design, the client (Streamlit
+  session or an API caller's `history` array) owns the history, not the server. First-turn
+  queries pay zero extra latency since contextualization only runs when history is present.
+  The resolved question is surfaced back (`resolved_query` in the API response, "Interpreted
+  as: …" in the UI) and the original question is what's kept in the audit trail
 
 ### Live market data (50 tickers · US + India)
 - **30 US** large-caps + **20 NSE** symbols (`.NS` suffix via yfinance)
@@ -399,6 +406,19 @@ curl http://localhost:8010/health/ready
 curl -X POST http://localhost:8010/query \
   -H "Content-Type: application/json" \
   -d '{"query": "What was Apple total net sales in the 10-K?"}'
+
+# Follow-up question — send prior turns as `history` (oldest first, max 12) so
+# "what about NVIDIA instead?" resolves correctly. Response includes
+# "resolved_query" showing what was actually asked when it differs from `query`.
+curl -X POST http://localhost:8010/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What about NVIDIA instead?",
+    "history": [
+      {"role": "user", "content": "What was Apple total net sales in the 10-K?"},
+      {"role": "assistant", "content": "Apple total net sales were $416,161 million for fiscal year 2025."}
+    ]
+  }'
 
 # Recent audit entries
 curl http://localhost:8010/audit?limit=10

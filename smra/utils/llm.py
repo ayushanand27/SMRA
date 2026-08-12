@@ -87,6 +87,10 @@ def _call_mock(system_prompt: str, user_prompt: str, model: str, max_tokens: int
         if "query router" in sys_l or user_prompt.strip().lower().startswith("query:"):
             return _mock_route_json(user_l)
 
+        if "chat history" in user_l and "latest question:" in user_l:
+            # Contextualization stub: passthrough (no rewrite) is a safe default for load tests.
+            return user_prompt.split("Latest question:")[-1].strip()
+
         if "rewrite the user's query" in user_l or "rewritten search phrase" in user_l:
             if "apple" in user_l or "aapl" in user_l:
                 return "Apple Inc total net sales annual report 10-K"

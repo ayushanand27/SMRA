@@ -9,7 +9,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from dotenv import load_dotenv
 
@@ -33,6 +33,7 @@ try:
     from smra.router import classify_intent
     from smra.utils import audit
     from smra.utils.config import get_settings
+    from smra.utils.conversation import contextualize_query
     from smra.utils.db import scalar_query
     from smra.utils.friendly_errors import (
         agent_error_answer,
@@ -53,6 +54,7 @@ except (ModuleNotFoundError, ImportError):
     from orchestrator import synthesize_hybrid_answer
     from router import classify_intent
     from utils.config import get_settings
+    from utils.conversation import contextualize_query
     from utils.db import scalar_query
     from utils.friendly_errors import (
         agent_error_answer,
@@ -139,8 +141,26 @@ def auth_and_limit(request: Request, x_api_key: Optional[str] = Header(default=N
     return identity
 
 
+class Turn(BaseModel):
+    """One prior message in the conversation, as the client remembers it.
+
+    Stateless by design: the client (Streamlit session, external caller) owns
+    conversation history and resends it each turn — no server-side session
+    store, so this works the same for one API replica or many.
+    """
+
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Natural language question")
+    history: List[Turn] = Field(
+        default_factory=list,
+        max_length=12,
+        description="Recent conversation turns (oldest first), for resolving follow-up questions "
+        "like 'what about last year?'. Only the most recent turns are actually used.",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -151,6 +171,9 @@ class QueryResponse(BaseModel):
     sources: List[Any] = []
     grounded: Optional[bool] = None
     ok: bool = True
+    resolved_query: Optional[str] = None
+    """Set only when history changed how the query was interpreted, e.g. 'what about last year?'
+    resolved to 'What was AAPL revenue in 2025?' — lets a client show what was actually asked."""
 
 
 def _to_urls(result: dict) -> list:
@@ -261,7 +284,11 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
         audit.record(qid, req.query, [], f"Blocked: {guard.reason}", ok=False)
         return QueryResponse(query_id=qid, routes=[], answer=f"Query rejected: {guard.reason}", ok=False)
 
-    prompt = guard.text
+    original_prompt = guard.text
+    prompt = original_prompt
+    if req.history:
+        prompt = contextualize_query([t.model_dump() for t in req.history], original_prompt)
+    resolved_query = prompt if prompt != original_prompt else None
 
     cached = get_cached_answer(prompt)
     if cached and (cached.get("answer") or "").strip():
@@ -269,7 +296,7 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
         cached_answer = _non_empty_answer(cached.get("answer", ""), "Cached response was empty.")
         audit.record(
             query_id=qid,
-            query=prompt,
+            query=original_prompt,
             routes=cached.get("routes", []),
             answer=cached_answer,
             sql=cached.get("sql", ""),
@@ -286,6 +313,7 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
             sources=cached.get("sources", []),
             grounded=cached.get("grounded"),
             ok=True,
+            resolved_query=resolved_query,
         )
 
     try:
@@ -375,7 +403,7 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
 
     audit.record(
         query_id=qid,
-        query=prompt,
+        query=original_prompt,
         routes=routes,
         answer=answer,
         sql=sql,
@@ -393,6 +421,7 @@ def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryR
         sources=sources,
         grounded=grounded,
         ok=pipeline_ok,
+        resolved_query=resolved_query,
     )
 
 
