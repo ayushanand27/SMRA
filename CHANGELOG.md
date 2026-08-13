@@ -3,9 +3,24 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-14
 
 ### Added
+- **MCP server** (`smra/mcp_server.py`): exposes SMRA as a tool for any MCP-capable AI agent
+  (Claude Desktop, Claude Code) via the `ask_smra` tool, over stdio. Verified against the real
+  protocol, not just unit-tested: spawned it as a subprocess, listed tools and called `ask_smra`
+  through the official `mcp` client SDK, got back a correct routed answer end-to-end through
+  Groq + Postgres.
+- **`smra/orchestrator.py: answer_query()`** — refactored the query pipeline (guardrails →
+  contextualize → cache → route → agents → synthesize → cache-write → audit) out of
+  `smra/api.py` into one shared function. Before this, that logic was duplicated between
+  `api.py`'s `/query` handler and `app.py`'s Streamlit chat handler (and would have been
+  triplicated again by the MCP server). Now the FastAPI endpoint and the MCP server both call
+  the same function, so neither can skip a safety or audit step by reimplementing the pipeline
+  slightly differently. Verified live: an MCP tool call and an API call both appear correctly
+  in the same `/audit` trail.
+- README: published the eval suite's actual measured numbers (100% routing accuracy, 14/14,
+  with the per-category breakdown) instead of just claiming test coverage exists.
 - **Deterministic financial calculations** (`smra/utils/financial_calc.py`): moving averages,
   % return, CAGR, annualized volatility, and 52-week high/low are computed in pure Python from
   the SQL agent's full result set, never estimated by the LLM. Handles multi-symbol results

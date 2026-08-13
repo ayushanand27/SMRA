@@ -58,6 +58,12 @@ flowchart TB
 - LLM intent router (`SQL` / `RAG` / `WEB` / `HYBRID`) with deterministic keyword fallback
 - HYBRID mode runs SQL + RAG in parallel and synthesizes one coherent answer
 - Unified response schemas, expandable routes, and per-request `query_id` for tracing
+- **One pipeline, three front doors:** `smra/orchestrator.py`'s `answer_query()` (guardrails →
+  contextualize → cache → route → agents → synthesize → audit) is the single implementation
+  used by the Streamlit UI, the FastAPI `/query` endpoint, and the [MCP server](#mcp-server-use-smra-from-claude-desktop--claude-code) —
+  no entry point can accidentally skip a safety or auditing step by reimplementing it slightly differently
+- **MCP server** (`smra/mcp_server.py`): exposes SMRA as a tool any MCP-capable AI agent (Claude
+  Desktop, Claude Code) can call directly — see [setup](#mcp-server-use-smra-from-claude-desktop--claude-code)
 - **Multi-turn conversation memory:** follow-ups like *"what about last year?"* or *"what about
   NVIDIA instead?"* are resolved into standalone questions using recent chat history
   (`smra/utils/conversation.py`) before routing — stateless by design, the client (Streamlit
@@ -108,13 +114,26 @@ flowchart TB
 - SQLite **audit trail** (`/audit` API)—every query persisted for replay and debugging
 
 ### Evaluation
+**Overall routing accuracy: 100% (14/14)** on the golden set, run in CI on every push:
+
+| Category | Accuracy | What it covers |
+|---|---|---|
+| SQL | 4/4 | Price lookups, technical indicators, sector/volume queries |
+| RAG | 3/3 | 10-K filing questions (revenue, R&D, margins) |
+| Web | 3/3 | Live news, "why did X move today" style questions |
+| Hybrid | 2/2 | Questions needing both market data and filing context |
+| Adversarial | 2/2 | Prompt injection / jailbreak attempts (must route to `BLOCK`) |
+
 - Golden dataset for routing + guardrail regression (`smra/eval/golden_dataset.json`)
-- Offline eval runner in CI (`python -m smra.eval.run_eval`)
+- Offline eval runner in CI (`python -m smra.eval.run_eval --threshold 0.7`) — reproduce locally with the same command
 - Optional **LLM-as-judge** scoring (`--judge`) for answer quality
 - Faithfulness helper validates numeric claims against retrieved context
+- Deterministic financial calculations (moving average, % return, CAGR, volatility, 52-week
+  high/low) are verified against ground truth computed independently from the database, not
+  just unit-tested — see [Deterministic financial calculations](#deterministic-financial-calculations-never-left-to-the-llm) above
 
 ### Quality & delivery
-- **86** automated unit tests (pytest, ~37% line coverage, enforced floor 35% via `pytest-cov`) + offline eval suite (100% routing accuracy on the golden set)
+- **118** automated unit tests (pytest, ~40% line coverage, enforced floor 35% via `pytest-cov`) + offline eval suite (100% routing accuracy on the golden set)
 - **GitHub Actions CI:** ruff lint + pytest + golden evals across **Python 3.10/3.11/3.12**, a dedicated Gitleaks secret-scan job, a `pip-audit` dependency vulnerability scan (report-only, see Known Limitations), and a Docker image build check
 - **`/health` vs `/health/ready`:** liveness (always cheap) vs readiness (pings Postgres + Redis for real, returns `503` on a hard DB failure) — use `/health/ready` before routing real traffic to an instance
 - **Dependabot** for pip, GitHub Actions, and Docker base-image updates
@@ -379,9 +398,10 @@ Free stack that keeps **all SMRA features**: Streamlit UI, FastAPI ingestion sch
 ```
 smra/
 ├── app.py / ui.py          # Streamlit chat UI
-├── api.py                  # FastAPI (/query, /health, /audit)
+├── api.py                  # FastAPI (/query, /health, /health/ready, /audit)
+├── mcp_server.py            # MCP server (ask_smra tool) for Claude Desktop/Code
 ├── router.py                # Intent classification
-├── orchestrator.py         # HYBRID synthesis
+├── orchestrator.py         # answer_query() — the one shared pipeline (API/UI/MCP), HYBRID synthesis
 ├── agents/                 # sql_agent, rag_agent, web_agent
 ├── ingestion/               # scheduler, upsert (Postgres)
 ├── data_sources/            # yfinance adapter
@@ -389,9 +409,10 @@ smra/
 ├── db/                      # Postgres schema, migrations/, migrate.py runner
 ├── scripts/                 # ingest_pdfs, migrate_sqlite_to_postgres, load_test.py, start_space.sh
 ├── eval/                    # golden dataset, LLM judge
-├── utils/                   # db, security, guardrails, observability, currency, warmup
+├── utils/                   # db, security, guardrails, observability, currency, warmup,
+│                             # conversation.py (multi-turn), financial_calc.py (deterministic math)
 └── pdfs/                    # 8 company filings
-tests/                       # pytest suite (86 tests)
+tests/                       # pytest suite (118 tests)
 .github/
 ├── workflows/ci.yml         # lint + test matrix + secret-scan + docker-build + offline evals
 ├── dependabot.yml           # pip / github-actions / docker updates
@@ -436,6 +457,45 @@ curl http://localhost:8010/audit?limit=10
 ```
 
 Enable auth: `AUTH_ENABLED=1` + `SMRA_API_KEYS=key1,key2` → pass `-H "X-API-Key: key1"`.
+
+---
+
+## MCP server (use SMRA from Claude Desktop / Claude Code)
+
+`smra/mcp_server.py` exposes SMRA as an [MCP](https://modelcontextprotocol.io) tool, so any
+MCP-capable agent can call it directly instead of being limited to the Streamlit UI. It runs
+over stdio (no network port, no API-key auth — the trust boundary is "who can spawn this
+process locally," the standard model for local MCP servers) and shares the exact same
+`answer_query()` pipeline as the FastAPI `/query` endpoint.
+
+**Claude Code:**
+
+```bash
+claude mcp add smra -- python -m smra.mcp_server
+```
+
+**Claude Desktop** — add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "smra": {
+      "command": "python",
+      "args": ["-m", "smra.mcp_server"],
+      "cwd": "/absolute/path/to/SMRA"
+    }
+  }
+}
+```
+
+Requires `smra/.env` configured the same as any other entry point (`GROQ_API_KEY` at minimum;
+`DATABASE_URL` unset falls back to the bundled SQLite dataset). Once connected, ask your
+agent something like *"Use the smra tool to find NVDA's 20-day moving average"* — the agent
+calls the single `ask_smra` tool, which returns `{answer, routes, sql, sources, ok}`.
+
+Verified against the real protocol (not just unit-tested): spawned the server as a subprocess,
+listed tools via the official `mcp` client SDK, and called `ask_smra` end-to-end through Groq +
+Postgres — got back a correct, routed answer.
 
 ---
 

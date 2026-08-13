@@ -41,7 +41,7 @@ jobs:
       - name: Ruff lint
         run: ruff check smra tests
 
-      # Floor set below the current measured baseline (~38%) so it fails on regressions
+      # Floor set below the current measured baseline (~40%) so it fails on regressions
       # without blocking today's merges; raise it as real coverage grows.
       - name: Pytest with coverage
         run: pytest --cov=smra --cov-report=term-missing --cov-report=xml --cov-fail-under=35

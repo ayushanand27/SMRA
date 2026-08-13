@@ -6,7 +6,6 @@ and provides a clean audited entry point. Run with:
     uvicorn smra.api:app --reload --port 8000
 """
 import logging
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, List, Literal, Optional
@@ -25,47 +24,17 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 try:
-    from smra.agents.rag_agent import run_rag_agent
-    from smra.agents.sql_agent import run_sql_agent
-    from smra.agents.web_agent import run_web_agent
-    from smra.cache.semantic_cache import get_cached_answer, set_cached_answer
-    from smra.orchestrator import synthesize_hybrid_answer
-    from smra.router import classify_intent
+    from smra.orchestrator import answer_query
     from smra.utils import audit
     from smra.utils.config import get_settings
-    from smra.utils.conversation import contextualize_query
     from smra.utils.db import scalar_query
-    from smra.utils.friendly_errors import (
-        agent_error_answer,
-        friendly_llm_message,
-        friendly_rag_message,
-        friendly_web_message,
-        safe_agent_call,
-    )
-    from smra.utils.guardrails import check_input, sanitize_output
-    from smra.utils.observability import configure_logging, get_query_id, new_query_id
-    from smra.utils.schemas import expand_routes
+    from smra.utils.observability import configure_logging
     from smra.utils.security import _get_redis_client, check_rate_limit, verify_api_key
 except (ModuleNotFoundError, ImportError):
-    from agents.rag_agent import run_rag_agent
-    from agents.sql_agent import run_sql_agent
-    from agents.web_agent import run_web_agent
-    from cache.semantic_cache import get_cached_answer, set_cached_answer
-    from orchestrator import synthesize_hybrid_answer
-    from router import classify_intent
+    from orchestrator import answer_query
     from utils.config import get_settings
-    from utils.conversation import contextualize_query
     from utils.db import scalar_query
-    from utils.friendly_errors import (
-        agent_error_answer,
-        friendly_llm_message,
-        friendly_rag_message,
-        friendly_web_message,
-        safe_agent_call,
-    )
-    from utils.guardrails import check_input, sanitize_output
-    from utils.observability import configure_logging, get_query_id, new_query_id
-    from utils.schemas import expand_routes
+    from utils.observability import configure_logging
     from utils.security import _get_redis_client, check_rate_limit, verify_api_key
 
     from utils import audit
@@ -176,11 +145,6 @@ class QueryResponse(BaseModel):
     resolved to 'What was AAPL revenue in 2025?' — lets a client show what was actually asked."""
 
 
-def _to_urls(result: dict) -> list:
-    meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
-    return meta.get("sources") or result.get("sources", []) or []
-
-
 @app.get("/health")
 def health() -> dict:
     try:
@@ -230,199 +194,11 @@ def health_ready(response: Response) -> dict:
     return {"ready": not hard_failure, "checks": checks}
 
 
-def _agent_answer(result: dict, agent: str) -> str:
-    if not isinstance(result, dict):
-        return agent_error_answer(agent, RuntimeError("invalid agent response"))
-    if result.get("ok") is False:
-        msg = result.get("answer") or result.get("error", {}).get("msg", "")
-        if msg.strip():
-            return msg
-        return agent_error_answer(agent, RuntimeError("agent failed"))
-    answer = (result.get("answer") or "").strip()
-    if not answer:
-        return agent_error_answer(agent, RuntimeError("empty agent response"))
-    return answer
-
-
-def _agent_ok(result: dict) -> bool:
-    if not isinstance(result, dict):
-        return False
-    if result.get("ok") is False:
-        return False
-    return bool((result.get("answer") or "").strip())
-
-
-def _non_empty_answer(text: str, fallback: str) -> str:
-    cleaned = sanitize_output((text or "").strip())
-    if cleaned:
-        return cleaned
-    return fallback
-
-
-def _run_rag_with_web_fallback(prompt: str) -> dict:
-    result = safe_agent_call("RAG", run_rag_agent, prompt)
-    if not isinstance(result, dict):
-        return {"ok": False, "answer": friendly_rag_message(), "fallback": True}
-    if not result.get("fallback"):
-        return result
-    web = safe_agent_call("WEB", run_web_agent, prompt)
-    if isinstance(web, dict) and web.get("ok") is not False and (web.get("answer") or "").strip():
-        return web
-    combined = friendly_rag_message()
-    if isinstance(web, dict) and web.get("ok") is False:
-        combined = f"{combined} {friendly_web_message()}"
-    return {**result, "ok": False, "answer": result.get("answer") or combined, "fallback": True}
-
-
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest, _identity: str = Depends(auth_and_limit)) -> QueryResponse:
-    qid = new_query_id()
-    start = time.perf_counter()
-
-    guard = check_input(req.query)
-    if not guard.ok:
-        audit.record(qid, req.query, [], f"Blocked: {guard.reason}", ok=False)
-        return QueryResponse(query_id=qid, routes=[], answer=f"Query rejected: {guard.reason}", ok=False)
-
-    original_prompt = guard.text
-    prompt = original_prompt
-    if req.history:
-        prompt = contextualize_query([t.model_dump() for t in req.history], original_prompt)
-    resolved_query = prompt if prompt != original_prompt else None
-
-    cached = get_cached_answer(prompt)
-    if cached and (cached.get("answer") or "").strip():
-        latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        cached_answer = _non_empty_answer(cached.get("answer", ""), "Cached response was empty.")
-        audit.record(
-            query_id=qid,
-            query=original_prompt,
-            routes=cached.get("routes", []),
-            answer=cached_answer,
-            sql=cached.get("sql", ""),
-            sources=cached.get("sources", []),
-            provider=settings.llm_provider,
-            latency_ms=latency_ms,
-            ok=True,
-        )
-        return QueryResponse(
-            query_id=get_query_id(),
-            routes=cached.get("routes", []),
-            answer=cached_answer,
-            sql=cached.get("sql", ""),
-            sources=cached.get("sources", []),
-            grounded=cached.get("grounded"),
-            ok=True,
-            resolved_query=resolved_query,
-        )
-
-    try:
-        routes = classify_intent(prompt)
-    except Exception:
-        logger.exception("Router failed; using keyword fallback")
-        try:
-            from smra.utils.schemas import keyword_route_fallback
-        except (ModuleNotFoundError, ImportError):
-            from utils.schemas import keyword_route_fallback
-        routes = keyword_route_fallback(prompt)
-
-    execution_routes = expand_routes(routes)
-    is_hybrid = "HYBRID" in routes or ("SQL" in execution_routes and "RAG" in execution_routes)
-
-    answer = ""
-    sql = ""
-    sources: list = []
-    grounded: Optional[bool] = None
-    pipeline_ok = True
-
-    try:
-        if is_hybrid:
-            sql_result = safe_agent_call("SQL", run_sql_agent, prompt)
-            rag_result = _run_rag_with_web_fallback(prompt)
-            pipeline_ok = _agent_ok(sql_result if isinstance(sql_result, dict) else {}) and _agent_ok(
-                rag_result if isinstance(rag_result, dict) else {}
-            )
-            try:
-                answer = synthesize_hybrid_answer(
-                    prompt,
-                    sql_result if isinstance(sql_result, dict) else {},
-                    rag_result if isinstance(rag_result, dict) else {},
-                )
-            except Exception as exc:
-                logger.exception("Hybrid synthesis failed")
-                pipeline_ok = False
-                answer = friendly_llm_message(exc)
-                parts = []
-                if isinstance(sql_result, dict):
-                    parts.append(_agent_answer(sql_result, "SQL"))
-                if isinstance(rag_result, dict):
-                    parts.append(_agent_answer(rag_result, "RAG"))
-                if parts:
-                    answer = "\n\n".join(p for p in parts if p)
-            sql = (sql_result or {}).get("sql", "") if isinstance(sql_result, dict) else ""
-            sources = _to_urls(rag_result if isinstance(rag_result, dict) else {})
-            grounded = (rag_result or {}).get("meta", {}).get("grounded") if isinstance(rag_result, dict) else None
-        else:
-            for route in execution_routes:
-                if route == "SQL":
-                    result = safe_agent_call("SQL", run_sql_agent, prompt)
-                    answer = _agent_answer(result if isinstance(result, dict) else {}, "SQL")
-                    sql = (result or {}).get("sql", "") if isinstance(result, dict) else ""
-                    pipeline_ok = _agent_ok(result if isinstance(result, dict) else {})
-                elif route == "RAG":
-                    result = _run_rag_with_web_fallback(prompt)
-                    answer = _agent_answer(result if isinstance(result, dict) else {}, "RAG")
-                    sources = _to_urls(result if isinstance(result, dict) else {})
-                    grounded = (result or {}).get("meta", {}).get("grounded") if isinstance(result, dict) else None
-                    pipeline_ok = _agent_ok(result if isinstance(result, dict) else {})
-                elif route == "WEB":
-                    result = safe_agent_call("WEB", run_web_agent, prompt)
-                    answer = _agent_answer(result if isinstance(result, dict) else {}, "WEB")
-                    sources = _to_urls(result if isinstance(result, dict) else {})
-                    pipeline_ok = _agent_ok(result if isinstance(result, dict) else {})
-    except Exception as exc:
-        logger.exception("Unhandled query pipeline error")
-        pipeline_ok = False
-        answer = agent_error_answer("LLM", exc)
-
-    fallback_msg = "I couldn't generate an answer right now. Please try again."
-    answer = _non_empty_answer(answer, fallback_msg)
-    if answer == fallback_msg:
-        pipeline_ok = False
-    latency_ms = round((time.perf_counter() - start) * 1000, 2)
-
-    payload = {
-        "routes": routes,
-        "answer": answer,
-        "sql": sql,
-        "sources": sources,
-        "grounded": grounded,
-    }
-    if pipeline_ok:
-        set_cached_answer(prompt, payload)
-
-    audit.record(
-        query_id=qid,
-        query=original_prompt,
-        routes=routes,
-        answer=answer,
-        sql=sql,
-        sources=sources,
-        provider=settings.llm_provider,
-        latency_ms=latency_ms,
-        ok=pipeline_ok,
-    )
-
-    return QueryResponse(
-        query_id=get_query_id(),
-        routes=routes,
-        answer=answer,
-        sql=sql,
-        sources=sources,
-        grounded=grounded,
-        ok=pipeline_ok,
-        resolved_query=resolved_query,
-    )
+    history = [t.model_dump() for t in req.history] if req.history else None
+    result = answer_query(req.query, history=history)
+    return QueryResponse(**result)
 
 
 @app.get("/audit")

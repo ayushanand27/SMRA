@@ -8,7 +8,7 @@ from smra.utils.schemas import error_response, success_response
 
 
 def test_agent_answer_uses_error_payload_message():
-    from smra.api import _agent_answer
+    from smra.orchestrator import _agent_answer
 
     msg = "The LLM service rejected the API key."
     result = error_response(msg, error_type="llm")
@@ -16,7 +16,7 @@ def test_agent_answer_uses_error_payload_message():
 
 
 def test_agent_answer_never_returns_empty_on_success_without_text():
-    from smra.api import _agent_answer
+    from smra.orchestrator import _agent_answer
 
     result = success_response(answer="", sql="SELECT 1")
     out = _agent_answer(result, "SQL")
