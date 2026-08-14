@@ -41,6 +41,11 @@ jobs:
       - name: Ruff lint
         run: ruff check smra tests
 
+      # smra/data/smra.db is git-ignored (regenerated, not committed) -- tests/test_db.py
+      # depends on it being present, matching the README's documented local setup step.
+      - name: Seed SQLite fallback DB
+        run: python smra/data/load_db.py --db smra/data/smra.db --set-columns
+
       # Floor set below the current measured baseline (~40%) so it fails on regressions
       # without blocking today's merges; raise it as real coverage grows.
       - name: Pytest with coverage
